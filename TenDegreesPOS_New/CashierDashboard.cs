@@ -1,6 +1,10 @@
-﻿using System;
+﻿using PdfSharp.Drawing;
+using PdfSharp.Fonts;
+using PdfSharp.Pdf;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using TenDegreesPOS_New.Models;
@@ -19,7 +23,6 @@ namespace TenDegreesPOS_New
 
         // Quantity adjustment controls
         private NumericUpDown? nudEditQuantity;
-        private Button? btnUpdateQty;
 
         // Discount controls
         private Panel? pnlDiscount;
@@ -27,6 +30,7 @@ namespace TenDegreesPOS_New
         private NumericUpDown? nudDiscountPercent;
         private Label? lblDiscountAmount;
         private Button? btnApplyDiscount;
+        private decimal currentDiscountAmount = 0;
 
         // Main content panels
         private Panel? pnlHome;
@@ -74,7 +78,6 @@ namespace TenDegreesPOS_New
         private DataGridView? dgvInventory;
         private TextBox? txtSearchInventory;
 
-
         // Settings panel controls
         private Button? btnLogout;
 
@@ -100,6 +103,9 @@ namespace TenDegreesPOS_New
 
         public CashierDashboard(string username)
         {
+            // Register font resolver for PdfSharp - ADD THIS LINE
+            GlobalFontSettings.FontResolver = new CustomFontResolver();
+
             this.Size = new Size(1800, 1000);
             InitializeComponent();
             SetUserInfo(username, "Cashier");
@@ -159,10 +165,8 @@ namespace TenDegreesPOS_New
         {
             insufficientMessage = null;
 
-            // Get the complete product with ingredients
             var fullProduct = dbService.GetProductById(product.Id);
 
-            // If product has no ingredients, it cannot be made - mark as unavailable
             if (fullProduct?.ProductIngredients == null || !fullProduct.ProductIngredients.Any())
             {
                 insufficientMessage = $"Product '{product.Name}' has no ingredients configured.\n\nPlease ask the administrator to set up ingredients for this product.";
@@ -172,16 +176,15 @@ namespace TenDegreesPOS_New
             var insufficientIngredients = new List<string>();
             string selectedSize = cmbSize?.SelectedItem?.ToString() ?? "";
 
-            foreach (var productIngredient in fullProduct.ProductIngredients)  // Changed from 'pi' or 'ingredient'
+            foreach (var productIngredient in fullProduct.ProductIngredients)
             {
                 if (productIngredient.IngredientId > 0)
                 {
-                    // Get current stock from cache or database
                     if (!ingredientStockCache.ContainsKey(productIngredient.IngredientId))
                     {
                         var inventory = dbService.GetInventoryForIngredient(productIngredient.IngredientId);
                         decimal currentStock = inventory?.Quantity ?? 0;
-                        var ingredientData = dbService.GetIngredientById(productIngredient.IngredientId);  // Changed variable name
+                        var ingredientData = dbService.GetIngredientById(productIngredient.IngredientId);
                         if (ingredientData != null)
                         {
                             ingredientStockCache[productIngredient.IngredientId] = (ingredientData, currentStock);
@@ -194,9 +197,8 @@ namespace TenDegreesPOS_New
                         continue;
                     }
 
-                    var (ingredientStock, availableStock) = ingredientStockCache[productIngredient.IngredientId];  // Changed variable name
+                    var (ingredientStock, availableStock) = ingredientStockCache[productIngredient.IngredientId];
 
-                    // Get required quantity based on selected size
                     decimal requiredPerUnit = 0;
                     if (product.HasSizes && !string.IsNullOrEmpty(selectedSize))
                     {
@@ -221,7 +223,6 @@ namespace TenDegreesPOS_New
                         requiredPerUnit = productIngredient.Quantity;
                     }
 
-                    // If requiredPerUnit is 0, that means no quantity set for this size
                     if (requiredPerUnit == 0)
                     {
                         insufficientIngredients.Add($"• {ingredientStock.Name}: No quantity set for {selectedSize} size");
@@ -366,8 +367,6 @@ namespace TenDegreesPOS_New
             };
             AddCategoryButtons();
 
-            // REMOVED: Quantity and Size dropdown controls
-
             Label lblProducts = new Label
             {
                 Text = "Products",
@@ -391,9 +390,9 @@ namespace TenDegreesPOS_New
             LoadProductCards();
 
             pnlLeft.Controls.AddRange(new Control[] {
-        lblTitle, lblSearch, txtSearch, lblCategory, cmbCategory,
-        flpCategories, lblProducts, flpProducts
-    });
+                lblTitle, lblSearch, txtSearch, lblCategory, cmbCategory,
+                flpCategories, lblProducts, flpProducts
+            });
 
             // RIGHT PANEL - CART
             Panel pnlRight = new Panel
@@ -446,7 +445,6 @@ namespace TenDegreesPOS_New
             dgvCart.Columns.Add("Price", "Price");
             dgvCart.Columns.Add("Total", "Total");
 
-            // Add selection changed event
             dgvCart.SelectionChanged += DgvCart_SelectionChanged!;
 
             // ========== QUANTITY EDIT PANEL ==========
@@ -486,9 +484,6 @@ namespace TenDegreesPOS_New
                 ForeColor = DeepSeekText
             };
 
-            // REMOVED: Update Qty button
-
-            // Add up/down buttons for quick adjustment with auto-update
             Button btnQtyUp = new Button
             {
                 Text = "▲",
@@ -529,10 +524,8 @@ namespace TenDegreesPOS_New
                 }
             };
 
-            // Add ValueChanged event to auto-update when typing
             nudEditQuantity.ValueChanged += (s, e) =>
             {
-                // Only auto-update if there's a selected item
                 if (dgvCart?.CurrentRow != null)
                 {
                     ApplyQuantityUpdate();
@@ -540,8 +533,8 @@ namespace TenDegreesPOS_New
             };
 
             pnlQtyEdit.Controls.AddRange(new Control[] {
-        lblEditQty, nudEditQuantity, btnQtyUp, btnQtyDown
-    });
+                lblEditQty, nudEditQuantity, btnQtyUp, btnQtyDown
+            });
 
             // Buttons: Remove and Clear All
             Button btnRemoveItem = new Button
@@ -667,11 +660,11 @@ namespace TenDegreesPOS_New
             };
 
             pnlTotals.Controls.AddRange(new Control[] {
-        lblSubTotalLabel, lblSubTotal,
-        lblTaxLabel, lblTax,
-        lblDiscountLabel, lblDiscount,
-        lblTotalLabel, lblTotal
-    });
+                lblSubTotalLabel, lblSubTotal,
+                lblTaxLabel, lblTax,
+                lblDiscountLabel, lblDiscount,
+                lblTotalLabel, lblTotal
+            });
 
             // BUTTONS
             btnPrintBill = new Button
@@ -797,18 +790,18 @@ namespace TenDegreesPOS_New
             btnApplyDiscount.Click += BtnApplyDiscount_Click!;
 
             pnlDiscount.Controls.AddRange(new Control[] {
-        chkApplyDiscount,
-        lblDiscountPercentLabel, nudDiscountPercent,
-        lblDiscountAmountLabel, lblDiscountAmount,
-        btnApplyDiscount
-    });
+                chkApplyDiscount,
+                lblDiscountPercentLabel, nudDiscountPercent,
+                lblDiscountAmountLabel, lblDiscountAmount,
+                btnApplyDiscount
+            });
 
             // Add ALL controls to the right panel
             pnlRight.Controls.AddRange(new Control[] {
-        lblCartTitle, dgvCart, pnlQtyEdit,
-        btnRemoveItem, btnClearCart,
-        pnlTotals, btnPrintBill, btnPayCash, btnPayGCash, pnlDiscount
-    });
+                lblCartTitle, dgvCart, pnlQtyEdit,
+                btnRemoveItem, btnClearCart,
+                pnlTotals, btnPrintBill, btnPayCash, btnPayGCash, pnlDiscount
+            });
 
             splitContainer.Panel1.Controls.Add(pnlLeft);
             splitContainer.Panel2.Controls.Add(pnlRight);
@@ -834,7 +827,6 @@ namespace TenDegreesPOS_New
                         cartItems[index].Quantity = newQuantity;
                         RefreshCart();
 
-                        // Keep the selection and update the numeric up/down
                         if (dgvCart.Rows.Count > index)
                         {
                             dgvCart.Rows[index].Selected = true;
@@ -845,7 +837,6 @@ namespace TenDegreesPOS_New
                     {
                         MessageBox.Show(message, "Insufficient Stock",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        // Revert the numeric up/down to the original quantity
                         nudEditQuantity.Value = cartItems[index].Quantity;
                     }
                 }
@@ -862,6 +853,7 @@ namespace TenDegreesPOS_New
                 nudEditQuantity.Value = cartItems[index].Quantity;
             }
         }
+
         private void AddCategoryButtons()
         {
             if (flpCategories == null) return;
@@ -920,7 +912,6 @@ namespace TenDegreesPOS_New
                 int quantity = (int)(nudQuantity?.Value ?? 1);
                 bool isAvailable = CheckProductAvailability(product, quantity, out string? availabilityMessage);
 
-                // Create product card
                 Panel card = new Panel
                 {
                     Size = new Size(210, 420),
@@ -1015,7 +1006,6 @@ namespace TenDegreesPOS_New
 
                 if (product.HasSizes)
                 {
-                    // Size label
                     Label lblSizeLabel = new Label
                     {
                         Text = "Size:",
@@ -1027,7 +1017,6 @@ namespace TenDegreesPOS_New
                     };
                     card.Controls.Add(lblSizeLabel);
 
-                    // Size ComboBox
                     ComboBox cmbCardSize = new ComboBox
                     {
                         Name = "cmbCardSize",
@@ -1042,7 +1031,6 @@ namespace TenDegreesPOS_New
                     cmbCardSize.Items.AddRange(new object[] { "Small", "Medium", "Large" });
                     cmbCardSize.SelectedIndex = 0;
 
-                    // Price display for each size
                     Label lblSmallPrice = new Label
                     {
                         Text = $"S: ₱{product.PriceSmall?.ToString("F2") ?? "0.00"}",
@@ -1077,7 +1065,6 @@ namespace TenDegreesPOS_New
                     card.Controls.Add(lblMediumPrice);
                     card.Controls.Add(lblLargePrice);
 
-                    // Selected price display
                     Label lblSelectedPrice = new Label
                     {
                         Text = $"Price: ₱{product.PriceSmall?.ToString("F2") ?? "0.00"}",
@@ -1090,7 +1077,6 @@ namespace TenDegreesPOS_New
                     };
                     card.Controls.Add(lblSelectedPrice);
 
-                    // Update price when size changes
                     cmbCardSize.SelectedIndexChanged += (s, ev) =>
                     {
                         var combo = s as ComboBox;
@@ -1110,7 +1096,6 @@ namespace TenDegreesPOS_New
 
                     card.Controls.Add(cmbCardSize);
 
-                    // Add to Cart button
                     Button btnAdd = new Button
                     {
                         Text = isAvailable ? "Add to Cart" : (availabilityMessage?.Contains("no ingredients") == true ? "No Recipe" : "Out of Stock"),
@@ -1124,7 +1109,6 @@ namespace TenDegreesPOS_New
                         FlatAppearance = { BorderSize = 0 }
                     };
 
-                    // Add tooltip for unavailable products
                     if (!isAvailable && availabilityMessage != null)
                     {
                         ToolTip tooltip = new ToolTip();
@@ -1171,7 +1155,6 @@ namespace TenDegreesPOS_New
                 }
                 else
                 {
-                    // No sizes - regular product
                     Label lblPrice = new Label
                     {
                         Text = $"₱{product.Price:F2}",
@@ -1197,7 +1180,6 @@ namespace TenDegreesPOS_New
                         FlatAppearance = { BorderSize = 0 }
                     };
 
-                    // Add tooltip for unavailable products
                     if (!isAvailable && availabilityMessage != null)
                     {
                         ToolTip tooltip = new ToolTip();
@@ -1276,15 +1258,6 @@ namespace TenDegreesPOS_New
                 "Large" => product.PriceLarge ?? product.Price,
                 _ => product.Price
             };
-        }
-
-        private void DebugStockLevels()
-        {
-            foreach (var kvp in ingredientStockCache)
-            {
-                var (ingredient, stock) = kvp.Value;
-                System.Diagnostics.Debug.WriteLine($"Ingredient: {ingredient.Name}, Stock: {stock}");
-            }
         }
 
         private void NudQuantity_ValueChanged(object sender, EventArgs e)
@@ -1388,18 +1361,13 @@ namespace TenDegreesPOS_New
                 }
             }
 
-            // Update totals
             UpdateTotals();
 
-            // Reset discount when cart changes
             if (chkApplyDiscount != null)
             {
                 chkApplyDiscount.Checked = false;
                 currentDiscountAmount = 0;
             }
-
-            // Debug output
-            System.Diagnostics.Debug.WriteLine($"Cart refreshed with {cartItems.Count} items, Subtotal: ₱{displaySubtotal}");
         }
 
         private void UpdateTotals()
@@ -1409,19 +1377,19 @@ namespace TenDegreesPOS_New
             decimal subTotal = cartItems.Sum(item => item.Price * item.Quantity);
             decimal discountAmount = currentDiscountAmount;
             decimal discountedSubTotal = subTotal - discountAmount;
-
-            // VAT is already included in the price
-            // Tax is the VAT component of the discounted subtotal
-            // Formula: Tax = Total * 12 / 112 (since 12% VAT on a price that includes VAT)
             decimal taxRate = 0.12m;
             decimal tax = discountedSubTotal * taxRate / (1 + taxRate);
-            decimal total = discountedSubTotal; // Total is the discounted subtotal (VAT already included)
+            decimal total = discountedSubTotal;
 
             lblSubTotal.Text = $"₱{subTotal:F2}";
             lblTax.Text = $"₱{tax:F2}";
             lblDiscount.Text = $"₱{discountAmount:F2}";
             lblTotal.Text = $"₱{total:F2}";
         }
+
+        #endregion
+
+        #region Payment Processing
 
         private void ProcessPayment(string paymentMethod)
         {
@@ -1432,7 +1400,6 @@ namespace TenDegreesPOS_New
                 return;
             }
 
-            // Check stock availability for all items before processing
             foreach (var item in cartItems)
             {
                 var product = dbService.GetProductById(item.ProductId);
@@ -1449,29 +1416,16 @@ namespace TenDegreesPOS_New
 
             try
             {
-                // Calculate totals from cart items - THIS IS THE SOURCE OF TRUTH
                 decimal subTotal = cartItems.Sum(item => item.Price * item.Quantity);
                 decimal discountAmount = currentDiscountAmount;
                 decimal discountedSubTotal = subTotal - discountAmount;
-
-                // Tax is the VAT component (12% of the discounted price, but price includes VAT)
-                // Formula: Tax = DiscountedSubTotal * 12 / 112
                 decimal tax = discountedSubTotal * 0.12m / 1.12m;
-                decimal total = discountedSubTotal; // Total is the discounted subtotal (VAT already included)
+                decimal total = discountedSubTotal;
 
-                // DEBUG: Print values
-                System.Diagnostics.Debug.WriteLine($"=== PAYMENT CALCULATION ===");
-                System.Diagnostics.Debug.WriteLine($"Subtotal from cart: {subTotal}");
-                System.Diagnostics.Debug.WriteLine($"Discount: {discountAmount}");
-                System.Diagnostics.Debug.WriteLine($"Discounted Subtotal: {discountedSubTotal}");
-                System.Diagnostics.Debug.WriteLine($"Tax (12% of discounted): {tax}");
-                System.Diagnostics.Debug.WriteLine($"Total: {total}");
-
-                // Create payment dialog to get amount paid
                 using (Form paymentDialog = new Form())
                 {
                     paymentDialog.Text = "Payment";
-                    paymentDialog.Size = new Size(350, 200);
+                    paymentDialog.Size = new Size(450, 320);
                     paymentDialog.StartPosition = FormStartPosition.CenterParent;
                     paymentDialog.BackColor = DeepSeekSurface;
                     paymentDialog.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -1482,70 +1436,116 @@ namespace TenDegreesPOS_New
                     {
                         Text = $"Total Amount: ₱{total:F2}",
                         Location = new Point(20, 20),
-                        Size = new Size(200, 30),
-                        Font = new Font("Segoe UI", 14, FontStyle.Bold),
-                        ForeColor = DeepSeekText
+                        Size = new Size(400, 35),
+                        Font = new Font("Segoe UI", 16, FontStyle.Bold),
+                        ForeColor = DeepSeekText,
+                        TextAlign = ContentAlignment.MiddleCenter
                     };
 
-                    Label lblAmountPaid = new Label
+                    Label lblAmountTendered = new Label
                     {
-                        Text = "Amount Paid:",
-                        Location = new Point(20, 65),
-                        Size = new Size(100, 25),
-                        ForeColor = DeepSeekTextMuted
+                        Text = "Amount Tendered:",
+                        Location = new Point(20, 70),
+                        Size = new Size(130, 25),
+                        ForeColor = DeepSeekTextMuted,
+                        Font = new Font("Segoe UI", 10)
                     };
 
                     NumericUpDown nudAmountPaid = new NumericUpDown
                     {
-                        Location = new Point(130, 62),
-                        Size = new Size(120, 30),
-                        Minimum = total,
-                        Maximum = total * 2,
+                        Location = new Point(160, 67),
+                        Size = new Size(130, 30),
+                        Minimum = 0,
+                        Maximum = 100000,
                         DecimalPlaces = 2,
-                        Value = total,
+                        Value = 0,
                         BackColor = DeepSeekBg,
-                        ForeColor = DeepSeekText
+                        ForeColor = DeepSeekText,
+                        Font = new Font("Segoe UI", 12)
                     };
 
                     Label lblChange = new Label
                     {
                         Text = "Change: ₱0.00",
-                        Location = new Point(20, 105),
-                        Size = new Size(200, 25),
-                        Font = new Font("Segoe UI", 10, FontStyle.Bold),
-                        ForeColor = DeepSeekSuccess
+                        Location = new Point(20, 115),
+                        Size = new Size(400, 30),
+                        Font = new Font("Segoe UI", 14, FontStyle.Bold),
+                        ForeColor = DeepSeekSuccess,
+                        TextAlign = ContentAlignment.MiddleCenter
                     };
 
                     nudAmountPaid.ValueChanged += (s, ev) =>
                     {
-                        decimal change = nudAmountPaid.Value - total;
-                        lblChange.Text = change >= 0 ? $"Change: ₱{change:F2}" : $"Short: ₱{-change:F2}";
-                        lblChange.ForeColor = change >= 0 ? DeepSeekSuccess : DeepSeekDanger;
+                        decimal amountPaid = nudAmountPaid.Value;
+                        decimal change = amountPaid - total;
+                        if (change >= 0)
+                        {
+                            lblChange.Text = $"Change: ₱{change:F2}";
+                            lblChange.ForeColor = DeepSeekSuccess;
+                        }
+                        else
+                        {
+                            lblChange.Text = $"Short: ₱{-change:F2}";
+                            lblChange.ForeColor = DeepSeekDanger;
+                        }
+                    };
+
+                    Button btnPayExact = new Button
+                    {
+                        Text = "Pay Exact Amount",
+                        Location = new Point(20, 160),
+                        Size = new Size(150, 35),
+                        BackColor = DeepSeekInfo,
+                        ForeColor = DeepSeekText,
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                        FlatAppearance = { BorderSize = 0 }
+                    };
+                    btnPayExact.Click += (s, ev) =>
+                    {
+                        nudAmountPaid.Value = total;
                     };
 
                     Button btnConfirm = new Button
                     {
                         Text = "Confirm Payment",
-                        Location = new Point(20, 140),
+                        Location = new Point(180, 160),
                         Size = new Size(120, 35),
                         BackColor = DeepSeekSuccess,
                         ForeColor = DeepSeekText,
                         FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                        FlatAppearance = { BorderSize = 0 },
                         DialogResult = DialogResult.OK
                     };
 
                     Button btnCancel = new Button
                     {
                         Text = "Cancel",
-                        Location = new Point(150, 140),
-                        Size = new Size(80, 35),
+                        Location = new Point(310, 160),
+                        Size = new Size(100, 35),
                         BackColor = DeepSeekDanger,
                         ForeColor = DeepSeekText,
                         FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                        FlatAppearance = { BorderSize = 0 },
                         DialogResult = DialogResult.Cancel
                     };
 
-                    paymentDialog.Controls.AddRange(new Control[] { lblTotal, lblAmountPaid, nudAmountPaid, lblChange, btnConfirm, btnCancel });
+                    Label lblMethod = new Label
+                    {
+                        Text = $"Payment Method: {paymentMethod}",
+                        Location = new Point(20, 210),
+                        Size = new Size(400, 25),
+                        Font = new Font("Segoe UI", 10, FontStyle.Italic),
+                        ForeColor = DeepSeekTextMuted,
+                        TextAlign = ContentAlignment.MiddleCenter
+                    };
+
+                    paymentDialog.Controls.AddRange(new Control[] {
+                        lblTotal, lblAmountTendered, nudAmountPaid, lblChange,
+                        btnPayExact, btnConfirm, btnCancel, lblMethod
+                    });
 
                     if (paymentDialog.ShowDialog() == DialogResult.OK)
                     {
@@ -1559,21 +1559,19 @@ namespace TenDegreesPOS_New
                             return;
                         }
 
-                        // Create transaction with CORRECT values
                         var transaction = new Transaction
                         {
                             UserId = userId,
                             PaymentMethod = paymentMethod,
                             Status = "Completed",
-                            SubTotal = subTotal,           // Use the calculated subtotal
+                            SubTotal = subTotal,
                             Discount = discountAmount,
                             Tax = tax,
-                            Total = total,                 // Use the calculated total
+                            Total = total,
                             AmountPaid = amountPaid,
                             Change = change
                         };
 
-                        // Create the items list with unit price and size
                         var items = cartItems.Select(item => (
                             productId: item.ProductId,
                             quantity: item.Quantity,
@@ -1583,16 +1581,10 @@ namespace TenDegreesPOS_New
 
                         var savedTransaction = dbService.CreateTransaction(transaction, items);
 
-                        // Show receipt with correct amounts using the ACTUAL cart items
-                        string receipt = GenerateReceiptString(savedTransaction, cartItems);
-                        MessageBox.Show(receipt, "Payment Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                        // Reset discount
                         currentDiscountAmount = 0;
                         if (chkApplyDiscount != null) chkApplyDiscount.Checked = false;
                         if (nudDiscountPercent != null) nudDiscountPercent.Value = 0;
 
-                        // Refresh stock cache
                         LoadStockCache();
                         LoadProductCards();
 
@@ -1602,13 +1594,12 @@ namespace TenDegreesPOS_New
                         currentSelectedProduct = null;
                         if (cmbSize != null) cmbSize.Enabled = false;
 
-                        // Ask to print receipt
                         DialogResult printResult = MessageBox.Show("Print receipt?", "Receipt",
                             MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
                         if (printResult == DialogResult.Yes)
                         {
-                            PrintReceipt(savedTransaction);
+                            GeneratePDFReceipt(savedTransaction);
                         }
                     }
                 }
@@ -1620,113 +1611,223 @@ namespace TenDegreesPOS_New
             }
         }
 
-        private string GenerateReceiptString(Transaction transaction, List<CartItem> items)
+        #endregion
+
+        #region PDF Receipt Generation
+
+        private void GeneratePDFReceipt(Transaction transaction)
         {
-            string receipt = "═══════════════════════════════════\n";
-            receipt += "         TEN DEGREES COFFEE          \n";
-            receipt += "═══════════════════════════════════\n";
-            receipt += $"Transaction #: {transaction.TransactionNumber}\n";
-            receipt += $"Date: {transaction.TransactionDate:yyyy-MM-dd HH:mm:ss}\n";
-            receipt += $"Cashier: {userName}\n";
-            receipt += "───────────────────────────────────\n";
-
-            decimal calculatedSubtotal = 0;
-            foreach (var item in items)
+            try
             {
-                string sizeInfo = string.IsNullOrEmpty(item.Size) ? "" : $" [{item.Size}]";
-                string itemName = item.Name ?? "Unknown Product";
-                if (itemName.Length > 25) itemName = itemName.Substring(0, 22) + "...";
+                var fullTransaction = dbService.GetTransactionById(transaction.Id);
+                var items = fullTransaction?.TransactionItems ?? new List<TransactionItem>();
 
-                decimal itemTotal = item.Price * item.Quantity;
-                calculatedSubtotal += itemTotal;
+                // Create a new PDF document
+                PdfDocument document = new PdfDocument();
+                document.Info.Title = $"Receipt_{transaction.TransactionNumber}";
 
-                receipt += $"{itemName}{sizeInfo}\n";
-                receipt += $"  {item.Quantity} x ₱{item.Price:F2} = ₱{itemTotal:F2}\n";
-            }
+                // Create a page
+                PdfPage page = document.AddPage();
+                page.Width = 500;
+                page.Height = 700;
 
-            receipt += "───────────────────────────────────\n";
-            receipt += $"Subtotal:        ₱{calculatedSubtotal:F2}\n";
-
-            if (transaction.Discount > 0)
-            {
-                receipt += $"Discount:       -₱{transaction.Discount:F2}\n";
-                receipt += $"Discounted Total: ₱{calculatedSubtotal - transaction.Discount:F2}\n";
-            }
-
-            receipt += $"VAT (12%):       ₱{transaction.Tax:F2}\n";
-            receipt += $"Total:           ₱{transaction.Total:F2}\n";
-            receipt += $"Payment:         ₱{transaction.AmountPaid:F2}\n";
-            receipt += $"Change:          ₱{transaction.Change:F2}\n";
-            receipt += "═══════════════════════════════════\n";
-            receipt += "     Thank you for your purchase!   \n";
-            receipt += "          Come again!               \n";
-            receipt += "═══════════════════════════════════\n";
-
-            return receipt;
-        }
-
-        private void PrintReceipt(Transaction transaction)
-        {
-            string receipt = "═══════════════════════════════════\n";
-            receipt += "         TEN DEGREES COFFEE          \n";
-            receipt += "═══════════════════════════════════\n";
-            receipt += $"Transaction #: {transaction.TransactionNumber}\n";
-            receipt += $"Date: {transaction.TransactionDate:yyyy-MM-dd HH:mm:ss}\n";
-            receipt += $"Cashier: {userName}\n";
-            receipt += "───────────────────────────────────\n";
-
-            // Get the items from the transaction
-            var fullTransaction = dbService.GetTransactionById(transaction.Id);
-            var items = fullTransaction?.TransactionItems ?? new List<TransactionItem>();
-
-            foreach (var item in items)
-            {
-                string sizeInfo = string.IsNullOrEmpty(item.Size) ? "" : $" [{item.Size}]";
-                string itemName = item.Product?.Name ?? "Unknown Product";
-                if (itemName.Length > 25) itemName = itemName.Substring(0, 22) + "...";
-
-                receipt += $"{itemName}{sizeInfo}\n";
-                receipt += $"  {item.Quantity} x ₱{item.UnitPrice:F2} = ₱{item.TotalPrice:F2}\n";
-            }
-
-            receipt += "───────────────────────────────────\n";
-            receipt += $"Subtotal:        ₱{transaction.SubTotal:F2}\n";
-
-            if (transaction.Discount > 0)
-            {
-                receipt += $"Discount:       -₱{transaction.Discount:F2}\n";
-                receipt += $"Discounted Total: ₱{transaction.SubTotal - transaction.Discount:F2}\n";
-            }
-
-            receipt += $"VAT (12%):       ₱{transaction.Tax:F2}\n";
-            receipt += $"Total:           ₱{transaction.Total:F2}\n";
-            receipt += $"Payment:         ₱{transaction.AmountPaid:F2}\n";
-            receipt += $"Change:          ₱{transaction.Change:F2}\n";
-            receipt += "═══════════════════════════════════\n";
-            receipt += "     Thank you for your purchase!   \n";
-            receipt += "          Come again!               \n";
-            receipt += "═══════════════════════════════════\n";
-
-            MessageBox.Show(receipt, "Receipt", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-
-        private void TxtSearch_TextChanged(object sender, EventArgs e) => LoadProductCards();
-        private void CmbCategory_SelectedIndexChanged(object sender, EventArgs e) => LoadProductCards();
-
-        private void BtnCategory_Click(object sender, EventArgs e)
-        {
-            if (sender is Button btn)
-            {
-                string category = btn.Tag?.ToString() ?? "All";
-                if (cmbCategory != null)
+                // Create graphics
+                using (XGraphics gfx = XGraphics.FromPdfPage(page))
                 {
-                    if (category == "All")
-                        cmbCategory.SelectedIndex = 0;
-                    else
-                        cmbCategory.SelectedItem = category;
+                    // Fonts
+                    XFont fontTitle = new XFont("Arial", 20);
+                    XFont fontSubTitle = new XFont("Arial", 14);
+                    XFont fontHeader = new XFont("Arial", 13);
+                    XFont fontNormal = new XFont("Arial", 12);
+                    XFont fontBold = new XFont("Arial", 13);
+                    XFont fontSmall = new XFont("Arial", 10);
+
+                    XPen penLine = new XPen(XColors.Black, 1);
+                    XPen penDoubleLine = new XPen(XColors.Black, 2);
+                    XBrush brushBlack = new XSolidBrush(XColors.Black);
+
+                    // START 40% LOWER than original (was 30, now 30 + 40% of page height)
+                    double yPos = 30 + (page.Height * 0.10);
+                    double centerX = page.Width / 2;
+                    double leftMargin = 30;
+                    double rightCol = page.Width - 30;
+
+                    // ========== HEADER ==========
+                    // Store Name - Centered
+                    string storeName = "TEN DEGREES CAFE";
+                    double storeNameWidth = gfx.MeasureString(storeName, fontTitle).Width;
+                    gfx.DrawString(storeName, fontTitle, brushBlack, new XPoint(centerX - storeNameWidth / 2, yPos));
+                    yPos += 32;
+
+                    // Address - Centered
+                    string address = "Commonwealth Avenue, Quezon City";
+                    double addressWidth = gfx.MeasureString(address, fontSubTitle).Width;
+                    gfx.DrawString(address, fontSubTitle, brushBlack, new XPoint(centerX - addressWidth / 2, yPos));
+                    yPos += 24;
+
+                    // TIN - Centered
+                    string tin = "VAT REG TIN# 123-456-789-00012";
+                    double tinWidth = gfx.MeasureString(tin, fontSubTitle).Width;
+                    gfx.DrawString(tin, fontSubTitle, brushBlack, new XPoint(centerX - tinWidth / 2, yPos));
+                    yPos += 24;
+
+                    // Double line separator
+                    gfx.DrawLine(penDoubleLine, 30, yPos, page.Width - 30, yPos);
+                    yPos += 18;
+
+                    // ========== TRANSACTION INFO ==========
+                    gfx.DrawString("SALES INVOICE", fontHeader, brushBlack, new XPoint(leftMargin, yPos));
+                    gfx.DrawString($"SI # {transaction.TransactionNumber}", fontNormal, brushBlack, new XPoint(350, yPos));
+                    yPos += 28;
+
+                    gfx.DrawString($"Date: {transaction.TransactionDate:MMMM dd, yyyy HH:mm}", fontNormal, brushBlack, new XPoint(leftMargin, yPos));
+                    gfx.DrawString($"Cashier: {userName}", fontNormal, brushBlack, new XPoint(350, yPos));
+                    yPos += 24;
+
+                    // Separator line
+                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    yPos += 16;
+
+                    // ========== ITEMS ==========
+                    // Headers
+                    gfx.DrawString("Item", fontBold, brushBlack, new XPoint(leftMargin, yPos));
+                    gfx.DrawString("Qty", fontBold, brushBlack, new XPoint(280, yPos));
+                    gfx.DrawString("Price", fontBold, brushBlack, new XPoint(350, yPos));
+                    gfx.DrawString("Total", fontBold, brushBlack, new XPoint(440, yPos));
+                    yPos += 24;
+
+                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    yPos += 12;
+
+                    // Items
+                    foreach (var item in items)
+                    {
+                        string itemName = item.Product?.Name ?? "Unknown Product";
+                        string sizeInfo = string.IsNullOrEmpty(item.Size) ? "" : $" ({item.Size})";
+                        string fullName = $"{itemName}{sizeInfo}";
+
+                        if (fullName.Length > 35)
+                            fullName = fullName.Substring(0, 32) + "...";
+
+                        gfx.DrawString(fullName, fontNormal, brushBlack, new XPoint(leftMargin, yPos));
+                        gfx.DrawString($"{item.Quantity}", fontNormal, brushBlack, new XPoint(290, yPos));
+                        gfx.DrawString($"₱{item.UnitPrice:F2}", fontNormal, brushBlack, new XPoint(350, yPos));
+                        gfx.DrawString($"₱{item.TotalPrice:F2}", fontNormal, brushBlack, new XPoint(440, yPos));
+                        yPos += 24;
+                    }
+
+                    // Separator line
+                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    yPos += 16;
+
+                    // ========== TOTALS ==========
+                    // Subtotal
+                    gfx.DrawString("Subtotal:", fontNormal, brushBlack, new XPoint(280, yPos));
+                    gfx.DrawString($"₱{transaction.SubTotal:F2}", fontNormal, brushBlack, new XPoint(440, yPos));
+                    yPos += 24;
+
+                    if (transaction.Discount > 0)
+                    {
+                        gfx.DrawString("Discount:", fontNormal, brushBlack, new XPoint(280, yPos));
+                        gfx.DrawString($"-₱{transaction.Discount:F2}", fontNormal, brushBlack, new XPoint(440, yPos));
+                        yPos += 24;
+                    }
+
+                    gfx.DrawString("VAT (12%):", fontNormal, brushBlack, new XPoint(280, yPos));
+                    gfx.DrawString($"₱{transaction.Tax:F2}", fontNormal, brushBlack, new XPoint(440, yPos));
+                    yPos += 24;
+
+                    // Double line separator
+                    gfx.DrawLine(penDoubleLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    yPos += 16;
+
+                    // TOTAL DUE - Bold and larger
+                    gfx.DrawString("TOTAL DUE", fontBold, brushBlack, new XPoint(280, yPos));
+                    gfx.DrawString($"₱{transaction.Total:F2}", fontBold, brushBlack, new XPoint(440, yPos));
+                    yPos += 30;
+
+                    gfx.DrawString($"Payment ({transaction.PaymentMethod}):", fontNormal, brushBlack, new XPoint(280, yPos));
+                    gfx.DrawString($"₱{transaction.AmountPaid:F2}", fontNormal, brushBlack, new XPoint(440, yPos));
+                    yPos += 24;
+
+                    gfx.DrawString("Change:", fontNormal, brushBlack, new XPoint(280, yPos));
+                    gfx.DrawString($"₱{transaction.Change:F2}", fontNormal, brushBlack, new XPoint(440, yPos));
+                    yPos += 24;
+
+                    // Separator line
+                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    yPos += 20;
+
+                    // ========== FOOTER ==========
+                    // Item count - Centered
+                    string itemCount = $"{items.Count} Item(s)";
+                    double itemCountWidth = gfx.MeasureString(itemCount, fontNormal).Width;
+                    gfx.DrawString(itemCount, fontNormal, brushBlack, new XPoint(centerX - itemCountWidth / 2, yPos));
+                    yPos += 28;
+
+                    string thankYou = "Thank you for your purchase!";
+                    double thankYouWidth = gfx.MeasureString(thankYou, fontBold).Width;
+                    gfx.DrawString(thankYou, fontBold, brushBlack, new XPoint(centerX - thankYouWidth / 2, yPos));
+                    yPos += 26;
+
+                    string comeAgain = "Come again!";
+                    double comeAgainWidth = gfx.MeasureString(comeAgain, fontNormal).Width;
+                    gfx.DrawString(comeAgain, fontNormal, brushBlack, new XPoint(centerX - comeAgainWidth / 2, yPos));
+                    yPos += 24;
+
+                    // Separator line
+                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    yPos += 14;
+
+                    string footer = "This is a system-generated receipt";
+                    double footerWidth = gfx.MeasureString(footer, fontSmall).Width;
+                    gfx.DrawString(footer, fontSmall, brushBlack, new XPoint(centerX - footerWidth / 2, yPos));
+                    yPos += 22;
+
+                    // Set page height based on content
+                    page.Height = yPos + 30;
+                }
+
+                // Save the PDF
+                using (MemoryStream stream = new MemoryStream())
+                {
+                    document.Save(stream, false);
+                    byte[] pdfBytes = stream.ToArray();
+
+                    using (SaveFileDialog saveDialog = new SaveFileDialog())
+                    {
+                        saveDialog.Filter = "PDF Files|*.pdf";
+                        saveDialog.FileName = $"Receipt_{transaction.TransactionNumber}.pdf";
+                        saveDialog.Title = "Save Receipt";
+
+                        if (saveDialog.ShowDialog() == DialogResult.OK)
+                        {
+                            File.WriteAllBytes(saveDialog.FileName, pdfBytes);
+                            MessageBox.Show($"Receipt saved successfully!\n\nLocation: {saveDialog.FileName}",
+                                "Receipt Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                            DialogResult openResult = MessageBox.Show("Would you like to open the PDF receipt?", "Open File",
+                                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                            if (openResult == DialogResult.Yes)
+                            {
+                                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                                {
+                                    FileName = saveDialog.FileName,
+                                    UseShellExecute = true
+                                });
+                            }
+                        }
+                    }
                 }
             }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error generating PDF receipt: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
+
+        #endregion
 
         private void RefreshProductAvailability()
         {
@@ -1739,7 +1840,6 @@ namespace TenDegreesPOS_New
                     int quantity = (int)(nudQuantity?.Value ?? 1);
                     bool isAvailable = CheckProductAvailability(product, quantity, out _);
 
-                    // Find the Add to Cart button in the card
                     Button? addButton = null;
                     foreach (Control child in card.Controls)
                     {
@@ -1757,46 +1857,7 @@ namespace TenDegreesPOS_New
                         addButton.Text = isAvailable ? "Add to Cart" : "Out of Stock";
                     }
 
-                    // Change card appearance for out of stock items
                     card.BackColor = isAvailable ? DeepSeekCard : Color.FromArgb(40, 30, 30);
-                }
-            }
-        }
-
-        private void BtnUpdateQuantity_Click(object sender, EventArgs e)
-        {
-            if (dgvCart?.CurrentRow == null)
-            {
-                MessageBox.Show("Please select an item to update.", "No Selection",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            int index = dgvCart.CurrentRow.Index;
-            if (index >= 0 && index < cartItems.Count)
-            {
-                int newQuantity = (int)(nudEditQuantity?.Value ?? 1);
-                var item = cartItems[index];
-                var product = dbService.GetProductById(item.ProductId);
-
-                if (product != null)
-                {
-                    if (CheckProductAvailability(product, newQuantity, out string? message))
-                    {
-                        cartItems[index].Quantity = newQuantity;
-                        RefreshCart();
-
-                        // Reset the numeric up/down after update
-                        if (nudEditQuantity != null)
-                        {
-                            nudEditQuantity.Value = newQuantity;
-                        }
-                    }
-                    else
-                    {
-                        MessageBox.Show(message, "Insufficient Stock",
-                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    }
                 }
             }
         }
@@ -1839,21 +1900,33 @@ namespace TenDegreesPOS_New
                 TransactionNumber = "TEMP-" + DateTime.Now.ToString("yyyyMMddHHmmss"),
                 TransactionDate = DateTime.Now,
                 SubTotal = cartItems.Sum(item => item.Price * item.Quantity),
-                Tax = cartItems.Sum(item => item.Price * item.Quantity) * 0.12m,
-                Total = cartItems.Sum(item => item.Price * item.Quantity) * 1.12m
+                Tax = cartItems.Sum(item => item.Price * item.Quantity) * 0.12m / 1.12m,
+                Total = cartItems.Sum(item => item.Price * item.Quantity)
             };
 
-            PrintReceipt(tempTransaction);
+            GeneratePDFReceipt(tempTransaction);
         }
 
         private void BtnPayCash_Click(object sender, EventArgs e) => ProcessPayment("Cash");
-        // Change this method name from BtnPayCard_Click to BtnPayGCash_Click
-        private void BtnPayGCash_Click(object sender, EventArgs e)
-        {
-            ProcessPayment("GCash");
-        }
+        private void BtnPayGCash_Click(object sender, EventArgs e) => ProcessPayment("GCash");
 
-        #endregion
+        private void TxtSearch_TextChanged(object sender, EventArgs e) => LoadProductCards();
+        private void CmbCategory_SelectedIndexChanged(object sender, EventArgs e) => LoadProductCards();
+
+        private void BtnCategory_Click(object sender, EventArgs e)
+        {
+            if (sender is Button btn)
+            {
+                string category = btn.Tag?.ToString() ?? "All";
+                if (cmbCategory != null)
+                {
+                    if (category == "All")
+                        cmbCategory.SelectedIndex = 0;
+                    else
+                        cmbCategory.SelectedItem = category;
+                }
+            }
+        }
 
         #region Discount Methods
 
@@ -1911,11 +1984,8 @@ namespace TenDegreesPOS_New
             lblDiscount.Text = $"₱{discountAmount:F2}";
             lblTotal.Text = $"₱{total:F2}";
 
-            
+            currentDiscountAmount = discountAmount;
         }
-
-        // Add this field to store discount amount
-        private decimal currentDiscountAmount = 0;
 
         #endregion
 

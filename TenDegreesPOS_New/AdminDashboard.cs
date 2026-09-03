@@ -214,7 +214,7 @@ namespace TenDegreesPOS_New
             btnDashboard = CreateSidebarButton("📊 Dashboard", 10, BtnDashboard_Click!);
             btnProduct = CreateSidebarButton("📦 Product Management", 60, BtnProduct_Click!);
             btnIngredients = CreateSidebarButton("🥗 Ingredients", 110, BtnIngredients_Click!);
-            btnStaff = CreateSidebarButton("👥 Staff Management", 160, BtnStaff_Click!);
+            btnStaff = CreateSidebarButton("👥 User Management", 160, BtnStaff_Click!);
             btnSupplier = CreateSidebarButton("🏭 Supplier", 210, BtnSupplier_Click!);
             btnReports = CreateSidebarButton("📊 Report Module", 260, BtnReports_Click!);
 
@@ -4607,16 +4607,16 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             dgvIngredientLibrary.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
             dgvIngredientLibrary.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
 
-            dgvIngredientLibrary.Columns.Add("Id", "ID");
+            
             dgvIngredientLibrary.Columns.Add("Name", "Ingredient Name");
             dgvIngredientLibrary.Columns.Add("Unit", "Unit");
             dgvIngredientLibrary.Columns.Add("MinStock", "Min Stock");
             dgvIngredientLibrary.Columns.Add("StockLeft", "Stock Left");
             dgvIngredientLibrary.Columns.Add("Status", "Status");
 
-            dgvIngredientLibrary.Columns["Id"].FillWeight = 5;
+            
             dgvIngredientLibrary.Columns["Name"].FillWeight = 35;
-            dgvIngredientLibrary.Columns["Unit"].FillWeight = 10;
+            dgvIngredientLibrary.Columns["Unit"].FillWeight = 15;
             dgvIngredientLibrary.Columns["MinStock"].FillWeight = 15;
             dgvIngredientLibrary.Columns["StockLeft"].FillWeight = 20;
             dgvIngredientLibrary.Columns["Status"].FillWeight = 15;
@@ -4773,7 +4773,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         {
             if (dgvIngredientLibrary == null) return;
             dgvIngredientLibrary.Rows.Clear();
-            var ingredients = dbService.GetAllIngredients();
+            var ingredients = dbService.GetAllIngredients().OrderBy(i => i.Name).ToList(); // Sort alphabetically
             var inventory = dbService.GetAllInventory();
             string searchText = txtSearchIngredient?.Text?.ToLower() ?? "";
 
@@ -4805,7 +4805,14 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                     statusText = "In Stock";
                 }
 
-                int rowIndex = dgvIngredientLibrary.Rows.Add(ingredient.Id, ingredient.Name, ingredient.Unit ?? "g", ingredient.MinimumStock, stockDisplay, statusText);
+                // REMOVED: ingredient.Id from the row
+                int rowIndex = dgvIngredientLibrary.Rows.Add(
+                    ingredient.Name,
+                    ingredient.Unit ?? "g",
+                    ingredient.MinimumStock,
+                    stockDisplay,
+                    statusText
+                );
 
                 if (rowIndex >= 0)
                 {
@@ -4838,15 +4845,16 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         private void DgvIngredientLibrary_SelectionChanged(object sender, EventArgs e)
         {
             if (dgvIngredientLibrary?.CurrentRow == null) return;
-            var selectedId = dgvIngredientLibrary.CurrentRow.Cells["Id"].Value;
-            if (selectedId != null)
+
+            // Instead of using ID column, get the ingredient by name
+            string ingredientName = dgvIngredientLibrary.CurrentRow.Cells["Name"].Value?.ToString();
+            if (!string.IsNullOrEmpty(ingredientName))
             {
-                int id = Convert.ToInt32(selectedId);
-                var ingredient = dbService.GetIngredientById(id);
+                var ingredient = dbService.GetAllIngredients().FirstOrDefault(i => i.Name == ingredientName);
                 if (ingredient != null && lblSelectedIngredient != null)
                 {
                     lblSelectedIngredient.Text = $"{ingredient.Name} ({ingredient.Unit})";
-                    selectedIngredientId = id;
+                    selectedIngredientId = ingredient.Id;
                 }
             }
         }
@@ -4883,8 +4891,11 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         private void BtnEditSelectedIngredient_Click(object sender, EventArgs e)
         {
             if (dgvIngredientLibrary?.CurrentRow == null) return;
-            int ingredientId = Convert.ToInt32(dgvIngredientLibrary.CurrentRow.Cells["Id"].Value);
-            var ingredient = dbService.GetIngredientById(ingredientId);
+
+            string ingredientName = dgvIngredientLibrary.CurrentRow.Cells["Name"].Value?.ToString();
+            if (string.IsNullOrEmpty(ingredientName)) return;
+
+            var ingredient = dbService.GetAllIngredients().FirstOrDefault(i => i.Name == ingredientName);
             if (ingredient != null && pnlIngredientForm != null)
             {
                 selectedIngredientId = ingredient.Id;
@@ -4922,9 +4933,17 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         private void BtnToggleSelectedIngredient_Click(object sender, EventArgs e)
         {
             if (dgvIngredientLibrary?.CurrentRow == null) return;
-            int ingredientId = Convert.ToInt32(dgvIngredientLibrary.CurrentRow.Cells["Id"].Value);
-            var ingredient = dbService.GetIngredientById(ingredientId);
-            if (ingredient != null) { ingredient.IsActive = !ingredient.IsActive; dbService.UpdateIngredient(ingredient); LoadIngredientLibrary(); }
+
+            string ingredientName = dgvIngredientLibrary.CurrentRow.Cells["Name"].Value?.ToString();
+            if (string.IsNullOrEmpty(ingredientName)) return;
+
+            var ingredient = dbService.GetAllIngredients().FirstOrDefault(i => i.Name == ingredientName);
+            if (ingredient != null)
+            {
+                ingredient.IsActive = !ingredient.IsActive;
+                dbService.UpdateIngredient(ingredient);
+                LoadIngredientLibrary();
+            }
         }
 
         private void BtnDeleteIngredient_Click(object sender, EventArgs e)
@@ -5578,7 +5597,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
             Label lblTitle = new Label
             {
-                Text = "Staff Management",
+                Text = "User Management",
                 Font = new Font("Segoe UI", 24, FontStyle.Bold),
                 ForeColor = DeepSeekText,
                 Location = new Point(30, 20),
@@ -6665,9 +6684,12 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             };
 
             // ========== TAB 2: ASSIGN INGREDIENTS ==========
-            TabPage tpAssignIngredients = new TabPage("Assign Ingredients");
-            tpAssignIngredients.BackColor = DeepSeekBg;
-            tpAssignIngredients.AutoScroll = true;
+            TabPage tpAssignIngredients = new TabPage("Assign Ingredients")
+            {
+                BackColor = DeepSeekBg,
+                AutoScroll = true,
+                Padding = new Padding(10)  // Add padding
+            };
             tpAssignIngredients.Name = "tpAssignIngredients";
 
             Panel pnlAssign = CreateAssignIngredientsPanel();
@@ -6759,11 +6781,11 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 Padding = new Padding(15)
             };
 
-            // Supplier Selection Panel (NO search here anymore)
+            // Supplier Selection Panel
             Panel pnlSupplierSelect = new Panel
             {
                 Location = new Point(0, 0),
-                Size = new Size(pnlMain.Width, 80),
+                Size = new Size(pnlMain.Width - 30, 80),
                 BackColor = DeepSeekSurface,
                 BorderStyle = BorderStyle.None,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
@@ -6818,11 +6840,11 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         lblSelectSupplier, cmbSupplierForIngredients
     });
 
-            // Ingredients List Panel with Search
+            // Ingredients List Panel
             Panel pnlIngredients = new Panel
             {
                 Location = new Point(0, 90),
-                Size = new Size(pnlMain.Width, 500),
+                Size = new Size(pnlMain.Width - 30, pnlMain.Height - 100),
                 BackColor = DeepSeekSurface,
                 BorderStyle = BorderStyle.None,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom
@@ -6845,7 +6867,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
             Label lblSearchIngredients = new Label
             {
-                Text = "Search:",
+                Text = "Search Ingredients:",
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = DeepSeekTextMuted,
                 Location = new Point(0, 10),
@@ -6866,11 +6888,11 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
             pnlSearch.Controls.AddRange(new Control[] { lblSearchIngredients, txtIngredientSearch });
 
-            // CheckedListBox for ingredients
+            // ========== DECLARE clbIngredients FIRST ==========
             CheckedListBox clbIngredients = new CheckedListBox
             {
-                Location = new Point(15, 65),
-                Size = new Size(pnlIngredients.Width - 30, 350),
+                Location = new Point(15, 115),
+                Size = new Size(pnlIngredients.Width - 30, pnlIngredients.Height - 140),
                 BackColor = DeepSeekBg,
                 ForeColor = DeepSeekText,
                 BorderStyle = BorderStyle.FixedSingle,
@@ -6906,7 +6928,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             // Initial load
             RefreshIngredientList("");
 
-            // Search text changed event
+            // Search text changed event - NOW clbIngredients EXISTS
             txtIngredientSearch.TextChanged += (s, e) =>
             {
                 RefreshIngredientList(txtIngredientSearch.Text);
@@ -6952,18 +6974,18 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 }
             };
 
-            // Save Button
+            // ========== SAVE BUTTON - Now clbIngredients EXISTS ==========
             Button btnSaveAssignments = new Button
             {
                 Text = "Save Assignments",
-                Location = new Point(15, 430),
-                Size = new Size(160, 45),
+                Location = new Point(15, 65),
+                Size = new Size(160, 40),
                 BackColor = DeepSeekSuccess,
                 ForeColor = DeepSeekText,
                 FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 FlatAppearance = { BorderSize = 0 },
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Left
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
 
             btnSaveAssignments.Click += (s, e) =>
@@ -6994,7 +7016,12 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 }
             };
 
-            pnlIngredients.Controls.AddRange(new Control[] { pnlSearch, clbIngredients, btnSaveAssignments });
+            // Add controls in order
+            pnlIngredients.Controls.AddRange(new Control[] {
+        pnlSearch,
+        btnSaveAssignments,
+        clbIngredients
+    });
 
             pnlMain.Controls.Add(pnlSupplierSelect);
             pnlMain.Controls.Add(pnlIngredients);
