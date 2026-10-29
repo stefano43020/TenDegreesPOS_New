@@ -39,6 +39,12 @@ namespace TenDegreesPOS_New.Models
 
         public decimal Change { get; set; }
 
+        public decimal CashPortion { get; set; } = 0;
+        public decimal GcashPortion { get; set; } = 0;
+
+        [MaxLength(20)]
+        public string? GcashReferenceNumber { get; set; }
+
         [MaxLength(20)]
         public string Status { get; set; } = "Completed";
 

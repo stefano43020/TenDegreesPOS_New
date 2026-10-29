@@ -5,95 +5,82 @@ namespace TenDegreesPOS_New.Services
 {
     public static class UnitConverter
     {
-        // Weight conversions (to grams)
-        private static readonly Dictionary<string, decimal> ToGrams = new Dictionary<string, decimal>
+        // Base unit is grams (g) for weight, milliliters (ml) for volume, pieces (pcs) for count.
+
+        private static readonly Dictionary<string, decimal> ToGrams = new(StringComparer.OrdinalIgnoreCase)
         {
-            { "g", 1m },
-            { "kg", 1000m },
-            { "tsp", 5m },      // 1 teaspoon = 5g (water/density dependent)
-            { "tbsp", 15m },    // 1 tablespoon = 15g
-            { "can", 400m }     // 1 standard can = 400g (adjustable)
+            { "g", 1m }, { "kg", 1000m }, { "mg", 0.001m }, { "oz", 28.3495m }, { "lb", 453.592m }
         };
 
-        // Volume conversions (to milliliters)
-        private static readonly Dictionary<string, decimal> ToMilliliters = new Dictionary<string, decimal>
+        private static readonly Dictionary<string, decimal> ToMilliliters = new(StringComparer.OrdinalIgnoreCase)
         {
-            { "ml", 1m },
-            { "L", 1000m },
-            { "tsp", 5m },      // 1 teaspoon = 5ml
-            { "tbsp", 15m },    // 1 tablespoon = 15ml
-            { "can", 400m }     // 1 standard can = 400ml
+            { "ml", 1m }, { "l", 1000m }, { "fl oz", 29.5735m }, { "tsp", 4.92892m }, { "tbsp", 14.7868m }, { "cup", 236.588m }
         };
 
-        public static decimal ConvertToGrams(decimal quantity, string fromUnit)
+        private static readonly Dictionary<string, decimal> ToPieces = new(StringComparer.OrdinalIgnoreCase)
         {
-            fromUnit = fromUnit.ToLower();
-            if (ToGrams.ContainsKey(fromUnit))
-                return quantity * ToGrams[fromUnit];
-            return quantity; // Unknown unit, return as-is
+            { "pcs", 1m }, { "pc", 1m }, { "piece", 1m }
+        };
+
+        public static string InferCategory(string? unit)
+        {
+            if (string.IsNullOrWhiteSpace(unit)) return "count";
+            var u = unit.Trim();
+            if (ToGrams.ContainsKey(u)) return "weight";
+            if (ToMilliliters.ContainsKey(u)) return "volume";
+            if (ToPieces.ContainsKey(u)) return "count";
+            return "count";
         }
 
-        public static decimal ConvertToMilliliters(decimal quantity, string fromUnit)
+        public static decimal ConvertToBase(decimal quantity, string fromUnit, string baseUnit)
         {
-            fromUnit = fromUnit.ToLower();
-            if (ToMilliliters.ContainsKey(fromUnit))
-                return quantity * ToMilliliters[fromUnit];
-            return quantity;
-        }
+            string category = InferCategory(baseUnit);
+            string fromCat = InferCategory(fromUnit);
 
-        public static decimal Convert(decimal quantity, string fromUnit, string toUnit)
-        {
-            // If units are the same, no conversion needed
-            if (fromUnit.ToLower() == toUnit.ToLower())
+            if (category != fromCat)
+                throw new InvalidOperationException($"Cannot convert {fromUnit} to {baseUnit} (different categories).");
+
+            if (string.Equals(fromUnit, baseUnit, StringComparison.OrdinalIgnoreCase))
                 return quantity;
 
-            // Weight-based conversions (g, kg, tsp, tbsp, can -> g or kg)
-            if (IsWeightUnit(toUnit))
+            decimal canonical = ToCanonical(quantity, fromUnit, category);
+            decimal divisor = ToCanonical(1m, baseUnit, category);
+
+            return canonical / divisor;
+        }
+
+        private static decimal ToCanonical(decimal quantity, string unit, string category)
+        {
+            if (category == "weight" && ToGrams.TryGetValue(unit, out var w)) return quantity * w;
+            if (category == "volume" && ToMilliliters.TryGetValue(unit, out var v)) return quantity * v;
+            if (category == "count" && ToPieces.TryGetValue(unit, out var p)) return quantity * p;
+
+            throw new InvalidOperationException($"Unknown unit '{unit}' for category {category}.");
+        }
+
+        public static List<string> GetUnitsForCategory(string category)
+        {
+            return category switch
             {
-                decimal grams = ConvertToGrams(quantity, fromUnit);
-                if (toUnit.ToLower() == "kg")
-                    return grams / 1000m;
-                return grams;
-            }
+                "weight" => new List<string> { "g", "kg", "mg", "oz", "lb" },
+                "volume" => new List<string> { "ml", "L", "fl oz", "tsp", "tbsp", "cup" },
+                _ => new List<string> { "pcs" }
+            };
+        }
 
-            // Volume-based conversions (ml, L, tsp, tbsp, can -> ml or L)
-            if (IsVolumeUnit(toUnit))
+        public static string GetDefaultBaseUnit(string category)
+        {
+            return category switch
             {
-                decimal ml = ConvertToMilliliters(quantity, fromUnit);
-                if (toUnit.ToLower() == "l")
-                    return ml / 1000m;
-                return ml;
-            }
-
-            // Unit doesn't match, return original
-            return quantity;
+                "weight" => "g",
+                "volume" => "ml",
+                _ => "pcs"
+            };
         }
 
-        private static bool IsWeightUnit(string unit)
+        public static bool IsValidConversion(string fromUnit, string toUnit)
         {
-            unit = unit.ToLower();
-            return unit == "g" || unit == "kg" || unit == "tsp" || unit == "tbsp" || unit == "can";
-        }
-
-        private static bool IsVolumeUnit(string unit)
-        {
-            unit = unit.ToLower();
-            return unit == "ml" || unit == "l" || unit == "tsp" || unit == "tbsp" || unit == "can";
-        }
-
-        public static List<string> GetWeightUnits()
-        {
-            return new List<string> { "g", "kg", "tsp", "tbsp", "can" };
-        }
-
-        public static List<string> GetVolumeUnits()
-        {
-            return new List<string> { "ml", "L", "tsp", "tbsp", "can" };
-        }
-
-        public static List<string> GetAllUnits()
-        {
-            return new List<string> { "g", "kg", "ml", "L", "pcs", "can", "tsp", "tbsp" };
+            return InferCategory(fromUnit) == InferCategory(toUnit);
         }
     }
 }

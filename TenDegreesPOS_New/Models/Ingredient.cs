@@ -20,6 +20,14 @@ namespace TenDegreesPOS_New.Models
         public string? BoxUnit { get; set; } = "kg";
         public string? BoxDisplayName { get; set; } = "Box";
 
+        // NEW: Reorder & EOQ settings
+        public decimal? ManualReorderQuantity { get; set; } // Overrides EOQ if set
+        public decimal ReorderPoint { get; set; } = 10;    // Usually equals MinimumStock
+
+        // Navigation property for the variants
+        public virtual ICollection<PackagingVariant>? PackagingVariants { get; set; }
+
+
         // NEW: Conversion to base unit (grams or milliliters)
         public string? BaseUnit { get; set; } = "g"; // Base unit for this ingredient (g or ml)
         public decimal GramsPerUnit { get; set; } = 1; // For weight-based ingredients

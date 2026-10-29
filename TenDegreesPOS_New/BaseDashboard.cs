@@ -186,6 +186,8 @@ namespace TenDegreesPOS_New
             this.Controls.AddRange(new Control[] { pnlContent, pnlSidebar, pnlTopBar });
         }
 
+
+        
         private void SetupBaseForm()
         {
             // Form properties

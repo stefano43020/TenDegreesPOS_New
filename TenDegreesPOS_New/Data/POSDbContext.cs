@@ -8,6 +8,7 @@ namespace TenDegreesPOS_New.Data
         public DbSet<User> Users { get; set; }
         public DbSet<Category> Categories { get; set; }
         public DbSet<Product> Products { get; set; }
+        public DbSet<PackagingVariant> PackagingVariants { get; set; }
         public DbSet<Ingredient> Ingredients { get; set; }
         public DbSet<ProductIngredient> ProductIngredients { get; set; }
         public DbSet<Inventory> Inventory { get; set; }
@@ -50,6 +51,13 @@ namespace TenDegreesPOS_New.Data
                 .WithMany(p => p.ProductIngredients)
                 .HasForeignKey(pi => pi.ProductId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<PackagingVariant>()
+    .HasOne(pv => pv.Ingredient)
+    .WithMany(i => i.PackagingVariants)
+    .HasForeignKey(pv => pv.IngredientId)
+    .OnDelete(DeleteBehavior.Cascade);
+
 
             modelBuilder.Entity<ProductIngredient>()
                 .HasOne(pi => pi.Ingredient)
