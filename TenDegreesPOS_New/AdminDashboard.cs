@@ -6678,7 +6678,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 ForeColor = DeepSeekText,
                 FlatStyle = FlatStyle.Flat
             };
-            cmbStaffRole.Items.AddRange(new object[] { "Cashier", "Manager" });
+            cmbStaffRole.Items.AddRange(new object[] { "Cashier", "Manager", "Barista" });
             cmbStaffRole.SelectedIndex = 0;
 
             // Generate Username button

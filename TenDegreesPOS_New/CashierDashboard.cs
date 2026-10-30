@@ -21,6 +21,8 @@ namespace TenDegreesPOS_New
         private Button? btnInventory;
         private Button? btnSettings;
 
+        private TcpServerService _tcpServer = new TcpServerService();
+
         // Quantity adjustment controls
         private NumericUpDown? nudEditQuantity;
 
@@ -109,6 +111,7 @@ namespace TenDegreesPOS_New
             InitializeComponent();
             SetUserInfo(username, "Cashier");
             SetupCashierControls();
+            _tcpServer.Start(8888);
             LoadStockCache();
             LoadProductCache();
             ShowHome();
@@ -1861,6 +1864,20 @@ namespace TenDegreesPOS_New
                         )).ToList();
 
                         var savedTransaction = dbService.CreateTransaction(transaction, items);
+
+                        // Send the order to the Barista via TCP
+                        var networkOrder = new NetworkOrder
+                        {
+                            TransactionNumber = savedTransaction.TransactionNumber,
+                            MessageType = "NEW_ORDER",
+                            Items = savedTransaction.TransactionItems.Select(ti => new NetworkOrderItem
+                            {
+                                ProductName = ti.Product?.Name ?? "Unknown",
+                                Size = ti.Size ?? "",
+                                Quantity = ti.Quantity
+                            }).ToList()
+                        };
+                        _tcpServer.BroadcastOrder(networkOrder);
 
                         currentDiscountAmount = 0;
                         if (chkApplyDiscount != null) chkApplyDiscount.Checked = false;

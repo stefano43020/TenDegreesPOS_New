@@ -304,20 +304,25 @@ namespace TenDegreesPOS_New
 
                     if (user.Role == "Admin")
                     {
-                        AdminDashboard adminDashboard = new AdminDashboard(user.Username);
-                        adminDashboard.FormClosed += (s, e) => Application.Exit();
-                        adminDashboard.Show();
+                        AdminDashboard admin = new AdminDashboard(user.Username);
+                        admin.Show();
+                        this.Hide();
                     }
-                    else if (user.Role == "Cashier")
+                    else if (user.Role == "Barista") // <--- ADD THIS BLOCK
                     {
-                        CashierDashboard cashierDashboard = new CashierDashboard(user.Username);
-                        cashierDashboard.FormClosed += (s, e) => Application.Exit();
-                        cashierDashboard.Show();
+                        BaristaDashboard barista = new BaristaDashboard();
+                        barista.Show();
+                        this.Hide();
+                    }
+                    else if (user.Role == "Cashier" || user.Role == "Manager")
+                    {
+                        CashierDashboard cashier = new CashierDashboard(user.Username);
+                        cashier.Show();
+                        this.Hide();
                     }
                     else
                     {
-                        MessageBox.Show("Invalid user role.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        this.Show();
+                        MessageBox.Show("Invalid user role.");
                     }
                 }
                 else
