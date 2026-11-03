@@ -14,6 +14,7 @@ namespace TenDegreesPOS_New.Services
         private StreamReader? _reader;
         public event Action<NetworkOrder>? OnOrderReceived;
 
+
         public async Task<bool> ConnectAsync(string serverIp, int port = 8888)
         {
             try
@@ -30,11 +31,25 @@ namespace TenDegreesPOS_New.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Connection failed: {ex.Message}");
+                // Temporarily pop a message box so we can see the real error
+                MessageBox.Show($"TCP Error: {ex.Message}", "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return false;
             }
         }
 
+        public async Task SendMessageAsync(string message)
+        {
+            if (_client != null && _client.Connected)
+            {
+                try
+                {
+                    var stream = _client.GetStream();
+                    byte[] data = Encoding.UTF8.GetBytes(message + "\n");
+                    await stream.WriteAsync(data, 0, data.Length);
+                }
+                catch {  }
+            }
+        }
         private async Task ListenForOrdersAsync()
         {
             while (_client != null && _client.Connected)

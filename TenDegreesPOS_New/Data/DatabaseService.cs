@@ -613,6 +613,23 @@ namespace TenDegreesPOS_New.Services
             }
         }
 
+        public void UpdateTransactionStatus(int transactionId, string newStatus)
+        {
+            try
+            {
+                var transaction = _context.Transactions.Find(transactionId);
+                if (transaction != null)
+                {
+                    transaction.Status = newStatus;
+                    _context.SaveChanges();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error updating transaction status: {ex.Message}", ex);
+            }
+        }
+
         public void UpdatePurchaseOrderStatus(int orderId, string status)
         {
             try

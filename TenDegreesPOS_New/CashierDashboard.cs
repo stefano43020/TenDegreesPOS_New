@@ -80,6 +80,10 @@ namespace TenDegreesPOS_New
         private DataGridView? dgvInventory;
         private TextBox? txtSearchInventory;
 
+        private Panel pnlQueueView;
+        private FlowLayoutPanel flpCashierQueue;
+        private Button btnQueue;
+
         // Settings panel controls
         private Button? btnLogout;
 
@@ -108,12 +112,18 @@ namespace TenDegreesPOS_New
             GlobalFontSettings.FontResolver = new CustomFontResolver();
 
             this.Size = new Size(1800, 1000);
+            this.FormBorderStyle = FormBorderStyle.Sizable; // Adds the standard window border
+            this.WindowState = FormWindowState.Maximized;   // Opens full screen
+
             InitializeComponent();
             SetUserInfo(username, "Cashier");
             SetupCashierControls();
-            _tcpServer.Start(8888);
             LoadStockCache();
             LoadProductCache();
+
+            _tcpServer.Start(8888);
+            _tcpServer.OnMessageReceived += HandleServerMessage;
+
             ShowHome();
         }
 
@@ -125,7 +135,7 @@ namespace TenDegreesPOS_New
         private void SetupCashierControls()
         {
             btnHome = CreateSidebarButton("🏠 Home", 10, BtnHome_Click!);
-            btnPromos = CreateSidebarButton("🎉 Promos", 60, BtnPromos_Click!);
+            btnQueue = CreateSidebarButton("📋 Live Queue", 60, BtnQueue_Click!);
             btnHistory = CreateSidebarButton("📋 History", 110, BtnHistory_Click!);
             btnInventory = CreateSidebarButton("📦 Inventory", 160, BtnInventory_Click!);
             btnSettings = CreateSidebarButton("⚙ Settings", 210, BtnSettings_Click!);
@@ -133,11 +143,67 @@ namespace TenDegreesPOS_New
             if (pnlSidebar != null)
             {
                 pnlSidebar.Controls.AddRange(new Control[] {
-                    btnHome, btnPromos, btnHistory, btnInventory, btnSettings
+                    btnHome, btnQueue, btnHistory, btnInventory, btnSettings
                 });
             }
         }
 
+        private void HandleServerMessage(string message)
+        {
+            try
+            {
+                var orderMsg = System.Text.Json.JsonSerializer.Deserialize<NetworkOrder>(message);
+
+                if (orderMsg != null)
+                {
+                    this.Invoke((MethodInvoker)delegate
+                    {
+                        if (flpCashierQueue == null) return;
+
+                        // Find the specific card
+                        Panel? targetCard = null;
+                        foreach (Control control in flpCashierQueue.Controls)
+                        {
+                            if (control is Panel card && card.Tag is string orderNum && orderNum == orderMsg.TransactionNumber)
+                            {
+                                targetCard = card;
+                                break;
+                            }
+                        }
+
+                        if (targetCard == null) return;
+
+                        if (orderMsg.MessageType == "ORDER_PREPARING")
+                        {
+                            // Update UI to show it's being made
+                            var lblStatus = targetCard.Controls.OfType<Label>().FirstOrDefault(l => l.Name == "lblStatus");
+                            if (lblStatus != null)
+                            {
+                                lblStatus.Text = "PREPARING";
+                                lblStatus.ForeColor = DeepSeekAccent; // Blue
+                            }
+
+                            // Optional: Change card border to indicate active prep
+                            targetCard.BackColor = Color.FromArgb(30, 40, 55);
+                        }
+                        else if (orderMsg.MessageType == "ORDER_COMPLETED")
+                        {
+                            // Remove the card entirely
+                            flpCashierQueue.Controls.Remove(targetCard);
+                            targetCard.Dispose();
+
+                            // Update DB status
+                            var tx = dbService.GetTransactionByNumber(orderMsg.TransactionNumber);
+                            if (tx != null)
+                            {
+                                dbService.UpdateTransactionStatus(tx.Id, "Fulfilled");
+                            }
+                        }
+                    });
+                }
+            }
+            catch { }
+        }
         private void LoadStockCache()
         {
             ingredientStockCache.Clear();
@@ -150,6 +216,87 @@ namespace TenDegreesPOS_New
                 decimal currentStock = stock?.Quantity ?? 0;
                 ingredientStockCache[ingredient.Id] = (ingredient, currentStock);
             }
+        }
+
+        private void BtnQueue_Click(object? sender, EventArgs e)
+        {
+            if (pnlContent == null) return;
+            pnlContent.Controls.Clear();
+
+            Label lblTitle = new Label { Text = "Live Kitchen Queue", Font = new Font("Segoe UI", 24, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(30, 20), AutoSize = true };
+
+            flpCashierQueue = new FlowLayoutPanel
+            {
+                Location = new Point(30, 80),
+                Size = new Size(pnlContent.Width - 60, pnlContent.Height - 120),
+                AutoScroll = true,
+                BackColor = DeepSeekBg,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+            };
+
+            pnlContent.Controls.AddRange(new Control[] { lblTitle, flpCashierQueue });
+
+            // Handle Resize
+            pnlContent.Resize += (s, e) => { flpCashierQueue.Size = new Size(pnlContent.Width - 60, pnlContent.Height - 120); };
+
+            // ▼▼▼ LOAD BACKLOG ▼▼▼
+            // Load today's transactions that are still "Completed" (meaning they haven't been voided)
+            // We display them here so the Cashier has context of what's in the kitchen.
+            var todaysTransactions = dbService.GetAllTransactions()
+                .Where(t => t.TransactionDate.Date == DateTime.Today && t.Status == "Completed")
+                .OrderByDescending(t => t.TransactionDate)
+                .ToList();
+
+            foreach (var tx in todaysTransactions)
+            {
+                var netOrder = new NetworkOrder
+                {
+                    TransactionNumber = tx.TransactionNumber,
+                    Items = tx.TransactionItems.Select(ti => new NetworkOrderItem
+                    {
+                        ProductName = ti.Product?.Name ?? "Unknown",
+                        Size = ti.Size ?? "",
+                        Quantity = ti.Quantity
+                    }).ToList()
+                };
+
+                AddCardToCashierQueue(netOrder);
+            }
+        }
+
+        private void HandleCashierNetworkMessage(NetworkOrder order)
+        {
+            this.Invoke((MethodInvoker)delegate
+            {
+                if (order.MessageType == "NEW_ORDER")
+                {
+                    if (flpCashierQueue != null && flpCashierQueue.Visible)
+                    {
+                        AddCardToCashierQueue(order);
+                    }
+                }
+            });
+        }
+
+        // ▼▼▼ NEW HELPER METHOD ▼▼▼
+        private void AddCardToCashierQueue(NetworkOrder order)
+        {
+            // ... existing duplicate check ...
+
+            Panel card = new Panel { Size = new Size(300, 180), BackColor = DeepSeekSurface, Margin = new Padding(10), Tag = order.TransactionNumber };
+
+            Label lblOrderNo = new Label { Text = $"#{order.TransactionNumber.Split('-').Last()}", Font = new Font("Segoe UI", 12, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
+
+            // ▼▼▼ ADD Name = "lblStatus" ▼▼▼
+            Label lblStatus = new Label { Name = "lblStatus", Text = "WAITING", Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = DeepSeekWarning, Location = new Point(200, 18), AutoSize = true };
+
+            string itemsText = string.Join("\n", order.Items.ConvertAll(i => $"• {i.Quantity}x {i.ProductName} {i.Size}"));
+            Label lblItems = new Label { Text = itemsText, Font = new Font("Segoe UI", 10), ForeColor = DeepSeekTextMuted, Location = new Point(15, 50), Size = new Size(270, 110) };
+
+            card.Controls.AddRange(new Control[] { lblOrderNo, lblStatus, lblItems });
+            flpCashierQueue.Controls.Add(card);
         }
 
         private void LoadProductCache()
@@ -1878,6 +2025,8 @@ namespace TenDegreesPOS_New
                             }).ToList()
                         };
                         _tcpServer.BroadcastOrder(networkOrder);
+                        // Update the Cashier's own UI if they have the Queue tab open
+                        HandleCashierNetworkMessage(networkOrder);
 
                         currentDiscountAmount = 0;
                         if (chkApplyDiscount != null) chkApplyDiscount.Checked = false;
@@ -2687,89 +2836,7 @@ namespace TenDegreesPOS_New
             currentDiscountAmount = discountAmount;
         }
 
-        // ============================================================
-        //  PROMOS
-        // ============================================================
-
-        private void ShowPromos()
-        {
-            if (pnlContent == null) return;
-            pnlContent.Controls.Clear();
-
-            Label lblTitle = new Label
-            {
-                Text = "Promotions",
-                Font = new Font("Segoe UI", 24, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                Location = new Point(30, 20),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            Label lblPromoCode = new Label
-            {
-                Text = "Enter Promo Code:",
-                Font = new Font("Segoe UI", 12, FontStyle.Bold),
-                ForeColor = DeepSeekTextMuted,
-                Location = new Point(30, 80),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            txtPromoCode = new TextBox
-            {
-                Location = new Point(30, 115),
-                Size = new Size(200, 35),
-                Font = new Font("Segoe UI", 11),
-                BackColor = DeepSeekSurface,
-                ForeColor = DeepSeekText,
-                BorderStyle = BorderStyle.FixedSingle
-            };
-
-            btnApplyPromo = new Button
-            {
-                Text = "Apply",
-                Location = new Point(240, 115),
-                Size = new Size(100, 35),
-                BackColor = DeepSeekAccent,
-                ForeColor = DeepSeekText,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 10, FontStyle.Bold),
-                FlatAppearance = { BorderSize = 0 }
-            };
-            btnApplyPromo.Click += BtnApplyPromo_Click!;
-
-            Label lblActivePromos = new Label
-            {
-                Text = "Active Promotions",
-                Font = new Font("Segoe UI", 16, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                Location = new Point(30, 170),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            dgvPromos = CreateDataGridView(new Point(30, 210), new Size(1700, 600));
-            dgvPromos.Columns.Add("Code", "Promo Code");
-            dgvPromos.Columns.Add("Name", "Promo Name");
-            dgvPromos.Columns.Add("Discount", "Discount");
-            dgvPromos.Columns.Add("ValidUntil", "Valid Until");
-            dgvPromos.Columns.Add("Status", "Status");
-
-            dgvPromos.Rows.Add("WELCOME10", "Welcome 10% Off", "10%", "2024-12-31", "Active");
-            dgvPromos.Rows.Add("FREESHIP", "Free Shipping", "₱50", "2024-12-31", "Active");
-            dgvPromos.Rows.Add("HOLIDAY20", "Holiday Special", "20%", "2024-12-25", "Active");
-
-            foreach (DataGridViewRow row in dgvPromos.Rows)
-            {
-                if (row.Cells["Status"].Value?.ToString() == "Active")
-                {
-                    row.Cells["Status"].Style.ForeColor = DeepSeekSuccess;
-                }
-            }
-
-            pnlContent.Controls.AddRange(new Control[] { lblTitle, lblPromoCode, txtPromoCode, btnApplyPromo, lblActivePromos, dgvPromos });
-        }
+        
 
         private void BtnApplyPromo_Click(object sender, EventArgs e)
         {
@@ -3105,7 +3172,6 @@ namespace TenDegreesPOS_New
         // ============================================================
 
         private void BtnHome_Click(object sender, EventArgs e) => ShowHome();
-        private void BtnPromos_Click(object sender, EventArgs e) => ShowPromos();
         private void BtnHistory_Click(object sender, EventArgs e) => ShowHistory();
         private void BtnInventory_Click(object sender, EventArgs e) => ShowInventory();
         private void BtnSettings_Click(object sender, EventArgs e) => ShowSettings();

@@ -58,33 +58,16 @@ namespace TenDegreesPOS_New
             InitializeComponent();
             SetupBaseForm();
 
-            this.WindowState = FormWindowState.Maximized;
-            this.FormBorderStyle = FormBorderStyle.None;
+           // this.WindowState = FormWindowState.Maximized;
+           // this.FormBorderStyle = FormBorderStyle.None;
         }
 
         private void InitializeComponent()
         {
-            // Top Bar - Keep height the same
-            pnlTopBar = new Panel
-            {
-                Height = 60,
-                Dock = DockStyle.Top,
-                BackColor = DeepSeekSurface
-            };
-
-            // Add subtle bottom border to top bar
-            pnlTopBar.Paint += (s, e) =>
-            {
-                using (Pen pen = new Pen(DeepSeekBorder))
-                {
-                    e.Graphics.DrawLine(pen, 0, pnlTopBar.Height - 1, pnlTopBar.Width, pnlTopBar.Height - 1);
-                }
-            };
-
-            // Sidebar - REDUCED WIDTH from 250 to 200 (20% thinner)
+            // Sidebar
             pnlSidebar = new Panel
             {
-                Width = 200,  // Changed from 250 to 200
+                Width = 200,
                 Dock = DockStyle.Left,
                 BackColor = DeepSeekSidebar,
                 BorderStyle = BorderStyle.None
@@ -107,99 +90,24 @@ namespace TenDegreesPOS_New
                 AutoScroll = true
             };
 
-            // Welcome Label
-            lblWelcome = new Label
-            {
-                Text = "Welcome",
-                Font = new Font("Segoe UI", 12, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                Location = new Point(20, 18),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            // Role Label
-            lblRole = new Label
-            {
-                Text = "Role",
-                Font = new Font("Segoe UI", 10),
-                ForeColor = DeepSeekTextMuted,
-                Location = new Point(120, 20),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            // Minimize Button
-            btnMinimize = new Button
-            {
-                Text = "—",
-                Font = new Font("Segoe UI", 14, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                BackColor = Color.Transparent,
-                FlatStyle = FlatStyle.Flat,
-                Size = new Size(40, 30),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                FlatAppearance = { BorderSize = 0 }
-            };
-            btnMinimize.MouseEnter += (s, e) => btnMinimize.BackColor = DeepSeekHover;
-            btnMinimize.MouseLeave += (s, e) => btnMinimize.BackColor = Color.Transparent;
-            btnMinimize.Click += (s, e) => this.WindowState = FormWindowState.Minimized;
-
-            // Maximize/Restore Button
-            btnMaximize = new Button
-            {
-                Text = "□",
-                Font = new Font("Segoe UI", 14, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                BackColor = Color.Transparent,
-                FlatStyle = FlatStyle.Flat,
-                Size = new Size(40, 30),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                FlatAppearance = { BorderSize = 0 }
-            };
-            btnMaximize.MouseEnter += (s, e) => btnMaximize.BackColor = DeepSeekHover;
-            btnMaximize.MouseLeave += (s, e) => btnMaximize.BackColor = Color.Transparent;
-            btnMaximize.Click += BtnMaximize_Click!;
-
-            // Close Button
-            btnClose = new Button
-            {
-                Text = "×",
-                Font = new Font("Segoe UI", 16, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                BackColor = Color.Transparent,
-                FlatStyle = FlatStyle.Flat,
-                Size = new Size(40, 30),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-                FlatAppearance = { BorderSize = 0 }
-            };
-            btnClose.MouseEnter += (s, e) => btnClose.BackColor = DeepSeekDanger;
-            btnClose.MouseLeave += (s, e) => btnClose.BackColor = Color.Transparent;
-            btnClose.Click += (s, e) => Application.Exit();
-
-            // Add controls to top bar
-            pnlTopBar.Controls.AddRange(new Control[] {
-                lblWelcome, lblRole,
-                btnMinimize, btnMaximize, btnClose
-            });
-
-            this.Controls.AddRange(new Control[] { pnlContent, pnlSidebar, pnlTopBar });
+            this.Controls.AddRange(new Control[] { pnlContent, pnlSidebar });
         }
 
 
-        
+
         private void SetupBaseForm()
         {
             // Form properties
             this.Text = "Ten Degrees POS - Dashboard";
             this.Size = new Size(1800, 1000);
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.FormBorderStyle = FormBorderStyle.None;
+
+            this.FormBorderStyle = FormBorderStyle.Sizable;
+
             this.BackColor = DeepSeekBg;
 
             // Add logout button after form is sized
             this.Load += BaseDashboard_Load;
-            this.Resize += BaseDashboard_Resize;
         }
 
         private void BaseDashboard_Load(object? sender, EventArgs e)
@@ -298,11 +206,9 @@ namespace TenDegreesPOS_New
             if (user != null)
                 userId = user.Id;
 
-            if (lblWelcome != null)
-                lblWelcome.Text = $"Welcome, {char.ToUpper(username[0]) + username[1..].ToLower()}";
-            if (lblRole != null)
-                lblRole.Text = $"({role.ToUpper()})";
-            this.Text = $"Ten Degrees POS - {role} Dashboard";
+            // Remove the lblWelcome and lblRole updates. 
+            // Just change the window title:
+            this.Text = $"Ten Degrees POS - {role} Dashboard ({username})";
         }
 
         protected virtual void BtnLogout_Click(object? sender, EventArgs e)

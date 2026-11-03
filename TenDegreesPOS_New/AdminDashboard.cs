@@ -220,10 +220,13 @@ namespace TenDegreesPOS_New
         public AdminDashboard(string username)
         {
             this.Size = new Size(1800, 1000);
+            this.FormBorderStyle = FormBorderStyle.Sizable; // Adds the standard window border
+            this.WindowState = FormWindowState.Maximized;   // Opens full screen
+
             InitializeComponent();
             SetUserInfo(username, "Admin");
             SetupAdminControls();
-            ShowDashboard();  // Dashboard is now the default view
+            ShowDashboard();
         }
 
         private void InitializeComponent()
