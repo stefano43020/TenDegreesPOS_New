@@ -20,6 +20,10 @@ namespace TenDegreesPOS_New.Models
         public string? BoxUnit { get; set; } = "kg";
         public string? BoxDisplayName { get; set; } = "Box";
 
+
+        [MaxLength(20)]
+        public string ItemType { get; set; } = "Ingredient"; // "Ingredient" or "Material"
+
         // NEW: Reorder & EOQ settings
         public decimal? ManualReorderQuantity { get; set; } // Overrides EOQ if set
         public decimal ReorderPoint { get; set; } = 10;    // Usually equals MinimumStock

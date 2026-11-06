@@ -12,6 +12,8 @@ namespace TenDegreesPOS_New.Data
         public DbSet<Ingredient> Ingredients { get; set; }
         public DbSet<ProductIngredient> ProductIngredients { get; set; }
         public DbSet<Inventory> Inventory { get; set; }
+
+        public DbSet<InventoryBatch> InventoryBatches { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<Transaction> Transactions { get; set; }
         public DbSet<TransactionItem> TransactionItems { get; set; }
@@ -51,6 +53,12 @@ namespace TenDegreesPOS_New.Data
                 .WithMany(p => p.ProductIngredients)
                 .HasForeignKey(pi => pi.ProductId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<InventoryBatch>()
+    .HasOne(ib => ib.Inventory)
+    .WithMany()
+    .HasForeignKey(ib => ib.InventoryId)
+    .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<PackagingVariant>()
     .HasOne(pv => pv.Ingredient)
@@ -163,26 +171,32 @@ namespace TenDegreesPOS_New.Data
                     .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // ========== NEW: Order Cancellation Configurations ==========
+            // ========== Order Cancellation Configurations ==========
 
             modelBuilder.Entity<OrderCancellation>(entity =>
             {
                 entity.HasIndex(oc => oc.TransactionNumber).IsUnique();
-                entity.HasIndex(oc => oc.CancelledDate);
+                entity.HasIndex(oc => oc.RequestedDate);
+                entity.HasIndex(oc => oc.Status);
 
                 entity.Property(oc => oc.OriginalTotal).HasColumnType("DECIMAL");
-                entity.Property(oc => oc.RefundAmount).HasColumnType("DECIMAL");
-                entity.Property(oc => oc.CancellationType).HasMaxLength(20).HasDefaultValue("Full");
-                entity.Property(oc => oc.RefundMethod).HasMaxLength(20).HasDefaultValue("Original");
+                entity.Property(oc => oc.Status).HasMaxLength(20).HasDefaultValue("Pending");
 
                 entity.HasOne(oc => oc.Transaction)
                     .WithMany()
                     .HasForeignKey(oc => oc.TransactionId)
                     .OnDelete(DeleteBehavior.Restrict);
 
-                entity.HasOne(oc => oc.CancelledByUser)
+                // New Requested By relationship
+                entity.HasOne(oc => oc.RequestedByUser)
                     .WithMany()
-                    .HasForeignKey(oc => oc.CancelledByUserId)
+                    .HasForeignKey(oc => oc.RequestedByUserId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                // New Approved By relationship
+                entity.HasOne(oc => oc.ApprovedByUser)
+                    .WithMany()
+                    .HasForeignKey(oc => oc.ApprovedByUserId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
 

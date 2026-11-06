@@ -16,25 +16,26 @@ namespace TenDegreesPOS_New.Models
         [MaxLength(50)]
         public string TransactionNumber { get; set; } = string.Empty;
 
+        // --- NEW: Request Details ---
         [Required]
-        public DateTime CancelledDate { get; set; } = DateTime.Now;
+        public DateTime RequestedDate { get; set; } = DateTime.Now;
 
         [Required]
-        public int CancelledByUserId { get; set; }
+        public int RequestedByUserId { get; set; }
+
+        // --- NEW: Approval Details ---
+        public DateTime? ApprovedDate { get; set; }
+
+        public int? ApprovedByUserId { get; set; }
 
         [Required]
         [MaxLength(20)]
-        public string CancellationType { get; set; } = "Full"; // Full, Partial
+        public string Status { get; set; } = "Pending"; // Pending, Approved, Rejected
 
         [MaxLength(500)]
         public string? Reason { get; set; }
 
         public decimal OriginalTotal { get; set; }
-
-        public decimal RefundAmount { get; set; }
-
-        [MaxLength(20)]
-        public string RefundMethod { get; set; } = "Original"; // Original, Cash, GCash
 
         [MaxLength(500)]
         public string? Notes { get; set; }
@@ -43,7 +44,10 @@ namespace TenDegreesPOS_New.Models
         [ForeignKey("TransactionId")]
         public virtual Transaction? Transaction { get; set; }
 
-        [ForeignKey("CancelledByUserId")]
-        public virtual User? CancelledByUser { get; set; }
+        [ForeignKey("RequestedByUserId")]
+        public virtual User? RequestedByUser { get; set; }
+
+        [ForeignKey("ApprovedByUserId")]
+        public virtual User? ApprovedByUser { get; set; }
     }
 }

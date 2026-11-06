@@ -49,6 +49,22 @@ namespace TenDegreesPOS_New.Services
                     Console.WriteLine($"{table}.{column} skipped: {e.Message}");
                 }
             }
+            try
+            {
+                _context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS InventoryBatches (
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        InventoryId INTEGER NOT NULL,
+                        Quantity DECIMAL NOT NULL,
+                        ExpirationDate TEXT NOT NULL,
+                        ReceivedDate TEXT NOT NULL,
+                        FOREIGN KEY(InventoryId) REFERENCES Inventory(Id) ON DELETE CASCADE
+                    );");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Create InventoryBatches skipped: {e.Message}");
+            }
 
             // ---- Products ----
             TryAddColumn("Products", "HasSizes", "INTEGER DEFAULT 0");
@@ -56,6 +72,20 @@ namespace TenDegreesPOS_New.Services
             TryAddColumn("Products", "PriceMedium", "DECIMAL");
             TryAddColumn("Products", "PriceLarge", "DECIMAL");
             TryAddColumn("Products", "ImagePath", "TEXT");
+
+            // ---- Inventory Tracking ----
+            TryAddColumn("Inventory", "ExpirationDate", "TEXT");
+            TryAddColumn("Inventory", "DamagedQuantity", "DECIMAL DEFAULT 0");
+
+            // ---- Ingredients (Item Type) ----
+            TryAddColumn("Ingredients", "ItemType", "TEXT DEFAULT 'Ingredient'");
+
+            // ---- Order Cancellations ----
+            TryAddColumn("OrderCancellations", "RequestedDate", "TEXT");
+            TryAddColumn("OrderCancellations", "RequestedByUserId", "INTEGER");
+            TryAddColumn("OrderCancellations", "ApprovedDate", "TEXT");
+            TryAddColumn("OrderCancellations", "ApprovedByUserId", "INTEGER");
+            TryAddColumn("OrderCancellations", "Status", "TEXT DEFAULT 'Pending'");
 
             // ---- TransactionItems ----
             TryAddColumn("TransactionItems", "Size", "TEXT");
@@ -83,10 +113,10 @@ namespace TenDegreesPOS_New.Services
                         FOREIGN KEY(IngredientId) REFERENCES Ingredients(Id) ON DELETE CASCADE
                     );");
             }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Create PackagingVariants skipped: {e.Message}");
-            }
+            catch (Exception e) { Console.WriteLine($"Create PackagingVariants skipped: {e.Message}"); }
+
+            // Add this line to handle existing databases
+            TryAddColumn("PackagingVariants", "Cost", "DECIMAL DEFAULT 0");
         }
 
         #endregion
@@ -195,11 +225,111 @@ namespace TenDegreesPOS_New.Services
             {
                 return _context.OrderCancellations
                     .Include(oc => oc.Transaction)
-                    .Include(oc => oc.CancelledByUser)
-                    .OrderByDescending(oc => oc.CancelledDate)
+                    .Include(oc => oc.RequestedByUser)
+                    .Include(oc => oc.ApprovedByUser)
+                    .OrderByDescending(oc => oc.RequestedDate)
                     .ToList();
             }
             catch (Exception ex) { throw new Exception($"Error getting cancellations: {ex.Message}", ex); }
+        }
+
+        public List<OrderCancellation> GetCancellationsByDateRange(DateTime startDate, DateTime endDate)
+        {
+            try
+            {
+                return _context.OrderCancellations
+                    .Include(oc => oc.Transaction)
+                    .Include(oc => oc.RequestedByUser)
+                    .Include(oc => oc.ApprovedByUser)
+                    .Where(oc => (oc.ApprovedDate ?? oc.RequestedDate) >= startDate && (oc.ApprovedDate ?? oc.RequestedDate) <= endDate)
+                    .OrderByDescending(oc => oc.ApprovedDate ?? oc.RequestedDate)
+                    .ToList();
+            }
+            catch (Exception ex) { throw new Exception($"Error getting cancellations by date: {ex.Message}", ex); }
+        }
+
+        public void RequestCancellation(int transactionId, int userId, string reason)
+        {
+            try
+            {
+                var transaction = _context.Transactions.Find(transactionId);
+                if (transaction == null) throw new Exception("Transaction not found");
+                if (transaction.Status != "Completed" && transaction.Status != "Fulfilled")
+                    throw new Exception("Only completed or fulfilled transactions can be cancelled");
+
+                var existingRequest = _context.OrderCancellations.FirstOrDefault(oc => oc.TransactionId == transactionId && oc.Status == "Pending");
+                if (existingRequest != null) throw new Exception("A cancellation request is already pending for this order.");
+
+                var cancellation = new OrderCancellation
+                {
+                    TransactionId = transactionId,
+                    TransactionNumber = transaction.TransactionNumber,
+                    RequestedDate = DateTime.Now,
+                    RequestedByUserId = userId,
+                    Status = "Pending",
+                    Reason = reason,
+                    OriginalTotal = transaction.Total
+                };
+
+                _context.OrderCancellations.Add(cancellation);
+                _context.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                // ▼▼▼ UNWRAP THE INNER EXCEPTION ▼▼▼
+                string errorMsg = ex.Message;
+                if (ex.InnerException != null)
+                {
+                    errorMsg += "\n\nDETAILS: " + ex.InnerException.Message;
+                    if (ex.InnerException.InnerException != null)
+                    {
+                        errorMsg += "\n\nDEEPER DETAILS: " + ex.InnerException.InnerException.Message;
+                    }
+                }
+                throw new Exception(errorMsg, ex);
+                // ▲▲▲ END OF UNWRAP ▲▲▲
+            }
+        }
+
+        public void ApproveCancellation(int cancellationId, int adminUserId)
+        {
+            using var dbTransaction = _context.Database.BeginTransaction();
+            try
+            {
+                var cancellation = _context.OrderCancellations
+                    .Include(oc => oc.Transaction)
+                    .FirstOrDefault(oc => oc.Id == cancellationId);
+
+                if (cancellation == null) throw new Exception("Cancellation request not found");
+                if (cancellation.Status != "Pending") throw new Exception("This request has already been processed");
+
+                cancellation.Status = "Approved";
+                cancellation.ApprovedDate = DateTime.Now;
+                cancellation.ApprovedByUserId = adminUserId;
+
+                if (cancellation.Transaction != null)
+                {
+                    cancellation.Transaction.Status = "Cancelled";
+                }
+
+                _context.SaveChanges();
+                dbTransaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                dbTransaction.Rollback();
+                throw new Exception($"Error approving cancellation: {ex.Message}", ex);
+            }
+        }
+
+        public List<OrderCancellation> GetPendingCancellations()
+        {
+            return _context.OrderCancellations
+                .Include(oc => oc.Transaction)
+                .Include(oc => oc.RequestedByUser)
+                .Where(oc => oc.Status == "Pending")
+                .OrderByDescending(oc => oc.RequestedDate)
+                .ToList();
         }
 
         public OrderCancellation? GetCancellationById(int id)
@@ -209,100 +339,14 @@ namespace TenDegreesPOS_New.Services
                 return _context.OrderCancellations
                     .Include(oc => oc.Transaction)
                     .ThenInclude(t => t.TransactionItems)
-                    .Include(oc => oc.CancelledByUser)
+                    .ThenInclude(ti => ti.Product)
+                    .Include(oc => oc.RequestedByUser)
+                    .Include(oc => oc.ApprovedByUser)
                     .FirstOrDefault(oc => oc.Id == id);
-            }
-            catch (Exception ex) { throw new Exception($"Error getting cancellation: {ex.Message}", ex); }
-        }
-
-        public List<OrderCancellation> GetCancellationsByDateRange(DateTime startDate, DateTime endDate)
-        {
-            try
-            {
-                return _context.OrderCancellations
-                    .Include(oc => oc.Transaction)
-                    .Include(oc => oc.CancelledByUser)
-                    .Where(oc => oc.CancelledDate >= startDate && oc.CancelledDate <= endDate)
-                    .OrderByDescending(oc => oc.CancelledDate)
-                    .ToList();
-            }
-            catch (Exception ex) { throw new Exception($"Error getting cancellations by date: {ex.Message}", ex); }
-        }
-
-        public OrderCancellation CancelTransaction(int transactionId, int userId, string reason, string refundMethod, string? notes = null)
-        {
-            using var dbTransaction = _context.Database.BeginTransaction();
-            try
-            {
-                var transaction = _context.Transactions
-                    .Include(t => t.TransactionItems)
-                    .FirstOrDefault(t => t.Id == transactionId);
-
-                if (transaction == null) throw new Exception("Transaction not found");
-                if (transaction.Status != "Completed") throw new Exception("Only completed transactions can be cancelled");
-
-                var cancellation = new OrderCancellation
-                {
-                    TransactionId = transaction.Id,
-                    TransactionNumber = transaction.TransactionNumber,
-                    CancelledDate = DateTime.Now,
-                    CancelledByUserId = userId,
-                    CancellationType = "Full",
-                    Reason = reason,
-                    OriginalTotal = transaction.Total,
-                    RefundAmount = transaction.Total,
-                    RefundMethod = refundMethod,
-                    Notes = notes
-                };
-
-                _context.OrderCancellations.Add(cancellation);
-                _context.SaveChanges();
-
-                foreach (var item in transaction.TransactionItems)
-                {
-                    var cancelledItem = new CancelledOrderItem
-                    {
-                        CancellationId = cancellation.Id,
-                        OriginalTransactionItemId = item.Id,
-                        ProductId = item.ProductId,
-                        ProductName = item.Product?.Name ?? "Unknown Product",
-                        Quantity = item.Quantity,
-                        UnitPrice = item.UnitPrice,
-                        TotalPrice = item.TotalPrice,
-                        Size = item.Size
-                    };
-                    _context.CancelledOrderItems.Add(cancelledItem);
-
-                    var productIngredients = _context.ProductIngredients
-                        .Where(pi => pi.ProductId == item.ProductId)
-                        .Include(pi => pi.Ingredient)
-                        .ToList();
-
-                    foreach (var pi in productIngredients)
-                    {
-                        if (pi.Ingredient != null)
-                        {
-                            var ingredientInventory = _context.Inventory
-                                .FirstOrDefault(i => i.IngredientId == pi.Ingredient.Id);
-
-                            if (ingredientInventory != null)
-                            {
-                                ingredientInventory.Quantity += pi.Quantity * item.Quantity;
-                                ingredientInventory.LastUpdated = DateTime.Now;
-                            }
-                        }
-                    }
-                }
-
-                transaction.Status = "Cancelled";
-                _context.SaveChanges();
-                dbTransaction.Commit();
-                return cancellation;
             }
             catch (Exception ex)
             {
-                dbTransaction.Rollback();
-                throw new Exception($"Error cancelling transaction: {ex.Message}", ex);
+                throw new Exception($"Error getting cancellation: {ex.Message}", ex);
             }
         }
 
@@ -528,7 +572,15 @@ namespace TenDegreesPOS_New.Services
             }
         }
 
-        public void ReceivePurchaseOrderPartially(int orderId, Dictionary<int, decimal> receivedBoxes)
+        public List<InventoryBatch> GetAllInventoryBatches()
+        {
+            return _context.InventoryBatches
+                .Include(ib => ib.Inventory)
+                .ThenInclude(i => i.Ingredient)
+                .OrderBy(ib => ib.ExpirationDate)
+                .ToList();
+        }
+        public void ReceivePurchaseOrderWithBatches(int orderId, Dictionary<int, (decimal Qty, DateTime ExpDate)> receivedData)
         {
             using var dbTransaction = _context.Database.BeginTransaction();
             try
@@ -545,57 +597,73 @@ namespace TenDegreesPOS_New.Services
 
                 foreach (var item in order.PurchaseOrderItems)
                 {
-                    if (receivedBoxes.ContainsKey(item.Id))
+                    if (receivedData.ContainsKey(item.Id))
                     {
-                        decimal boxesToReceive = receivedBoxes[item.Id];
-                        decimal currentReceivedBoxes = item.BoxesReceived;
-                        decimal newReceivedBoxes = currentReceivedBoxes + boxesToReceive;
+                        var data = receivedData[item.Id];
+                        decimal boxesToReceive = data.Qty;
+                        DateTime expirationDate = data.ExpDate;
 
+                        decimal newReceivedBoxes = item.BoxesReceived + boxesToReceive;
                         if (newReceivedBoxes > item.BoxesOrdered + 0.01m)
                             throw new Exception($"Cannot receive more than ordered for {item.IngredientName}");
 
                         item.BoxesReceived = newReceivedBoxes;
 
+                        // Unit conversion logic
                         decimal boxQuantity = item.BoxQuantityPerUnit ?? 1;
                         string boxUnit = item.BoxUnit ?? "kg";
                         string ingredientUnit = item.Ingredient?.Unit ?? "g";
-
                         decimal quantityPerBoxInIngredientUnit = boxQuantity;
 
                         if (boxUnit.ToLower() != ingredientUnit.ToLower())
                         {
-                            if (boxUnit.ToLower() == "l" && ingredientUnit.ToLower() == "ml")
-                                quantityPerBoxInIngredientUnit = boxQuantity * 1000m;
-                            else if (boxUnit.ToLower() == "ml" && ingredientUnit.ToLower() == "l")
-                                quantityPerBoxInIngredientUnit = boxQuantity / 1000m;
-                            else if (boxUnit.ToLower() == "kg" && ingredientUnit.ToLower() == "g")
-                                quantityPerBoxInIngredientUnit = boxQuantity * 1000m;
-                            else if (boxUnit.ToLower() == "g" && ingredientUnit.ToLower() == "kg")
-                                quantityPerBoxInIngredientUnit = boxQuantity / 1000m;
+                            if (boxUnit.ToLower() == "l" && ingredientUnit.ToLower() == "ml") quantityPerBoxInIngredientUnit = boxQuantity * 1000m;
+                            else if (boxUnit.ToLower() == "ml" && ingredientUnit.ToLower() == "l") quantityPerBoxInIngredientUnit = boxQuantity / 1000m;
+                            else if (boxUnit.ToLower() == "kg" && ingredientUnit.ToLower() == "g") quantityPerBoxInIngredientUnit = boxQuantity * 1000m;
+                            else if (boxUnit.ToLower() == "g" && ingredientUnit.ToLower() == "kg") quantityPerBoxInIngredientUnit = boxQuantity / 1000m;
                         }
 
                         decimal quantityReceived = boxesToReceive * quantityPerBoxInIngredientUnit;
-                        item.QuantityReceived = quantityReceived;
+                        item.QuantityReceived += quantityReceived;
 
+                        // Get or create the parent Inventory record
                         var inventory = _context.Inventory.FirstOrDefault(i => i.IngredientId == item.IngredientId);
-                        decimal quantityToAdd = boxesToReceive * quantityPerBoxInIngredientUnit;
-
-                        if (inventory != null)
+                        if (inventory == null)
                         {
-                            inventory.Quantity += quantityToAdd;
-                            inventory.LastUpdated = DateTime.Now;
-                        }
-                        else
-                        {
-                            var newInventory = new Inventory
+                            inventory = new Inventory
                             {
                                 IngredientId = item.IngredientId,
-                                Quantity = quantityToAdd,
+                                Quantity = 0,
                                 Unit = ingredientUnit,
                                 LastUpdated = DateTime.Now
                             };
-                            _context.Inventory.Add(newInventory);
+                            _context.Inventory.Add(inventory);
+                            _context.SaveChanges(); // Need the ID for the batch
                         }
+
+                        // ▼▼▼ FIX: Only add to sellable stock if it hasn't expired yet ▼▼▼
+                        if (expirationDate.Date >= DateTime.Today)
+                        {
+                            inventory.Quantity += quantityReceived;
+                        }
+                        else
+                        {
+                            // If it's already expired upon arrival, log it to the batch but don't add to sellable inventory.
+                            // It will sit in the "Expired" monitoring tab.
+                            System.Diagnostics.Debug.WriteLine($"Received expired item: {item.IngredientName}. Quantity not added to sellable stock.");
+                        }
+
+                        inventory.LastUpdated = DateTime.Now;
+
+                        // Create the new Batch record
+                        var batch = new InventoryBatch
+                        {
+                            InventoryId = inventory.Id,
+                            Quantity = quantityReceived,
+                            ExpirationDate = expirationDate,
+                            ReceivedDate = DateTime.Now
+                        };
+                        _context.InventoryBatches.Add(batch);
 
                         if (item.BoxesReceived < item.BoxesOrdered - 0.01m)
                             allFullyReceived = false;
@@ -613,6 +681,77 @@ namespace TenDegreesPOS_New.Services
             }
         }
 
+        public void ProcessExpiredBatches()
+        {
+            try
+            {
+                DateTime today = DateTime.Today;
+
+                // Find batches that are expired and are still counted in the active inventory
+                // (We can use a boolean flag in the model, or check if the parent inventory Qty > 0)
+                var expiredBatches = _context.InventoryBatches
+                    .Include(ib => ib.Inventory)
+                    .Where(ib => ib.ExpirationDate.Date < today)
+                    .ToList();
+
+                bool changesMade = false;
+
+                foreach (var batch in expiredBatches)
+                {
+                    if (batch.Inventory != null && batch.Quantity > 0)
+                    {
+                        // Deduct from sellable stock
+                        batch.Inventory.Quantity -= batch.Quantity;
+
+                        // Ensure it doesn't drop below 0
+                        if (batch.Inventory.Quantity < 0) batch.Inventory.Quantity = 0;
+
+                        batch.Inventory.LastUpdated = DateTime.Now;
+
+                        // Log that we processed this batch (so we don't deduct it again next time)
+                        // Since we don't have a flag, we'll just set the batch quantity to 0
+                        // and rely on the Monitoring module to show the historical data if needed.
+                        // For simplicity, we will leave the batch quantity, but we know it's expired.
+
+                        // To prevent infinite deduction, we need to mark the batch as "deducted".
+                        // Best way without changing schema: Delete the batch or set its Quantity to 0.
+                        // Let's set the quantity to 0 so it doesn't get deducted again.
+                        // (The Monitoring tab will still show it based on the ExpirationDate).
+                        batch.Quantity = 0;
+
+                        changesMade = true;
+                    }
+                }
+
+                if (changesMade)
+                {
+                    _context.SaveChanges();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error processing expired batches: {ex.Message}");
+            }
+        }
+        public void LogDamagedItem(int inventoryId, decimal damagedQty)
+        {
+            try
+            {
+                var inventory = _context.Inventory.Find(inventoryId);
+                if (inventory != null)
+                {
+                    // Ensure we don't subtract more than we have
+                    decimal actualDamage = Math.Min(inventory.Quantity, damagedQty);
+
+                    inventory.Quantity -= actualDamage;       // Remove from sellable stock
+                    inventory.DamagedQuantity += actualDamage; // Add to damaged log
+                    inventory.LastUpdated = DateTime.Now;
+
+                    _context.SaveChanges();
+                }
+            }
+            catch (Exception ex) { throw new Exception($"Error logging damaged item: {ex.Message}", ex); }
+        }
         public void UpdateTransactionStatus(int transactionId, string newStatus)
         {
             try
@@ -1132,11 +1271,19 @@ namespace TenDegreesPOS_New.Services
         {
             try
             {
+                // We still use the INV prefix internally for the database to keep unique IDs across all time
                 string prefix = "INV";
                 string datePart = DateTime.Now.ToString("yyyyMMdd");
-                int count = _context.Transactions
-                    .Count(t => t.TransactionDate.Date == DateTime.Now.Date) + 1;
-                return $"{prefix}{datePart}{count:D4}";
+
+                // Find how many transactions were made TODAY
+                int countToday = _context.Transactions
+                    .Count(t => t.TransactionDate.Date == DateTime.Now.Date);
+
+                // The new daily number is today's count + 1
+                int dailyNumber = countToday + 1;
+
+                // We append the daily number to the end so it's sequential for the day
+                return $"{prefix}{datePart}{dailyNumber:D4}";
             }
             catch (Exception ex) { throw new Exception($"Error generating transaction number: {ex.Message}", ex); }
         }

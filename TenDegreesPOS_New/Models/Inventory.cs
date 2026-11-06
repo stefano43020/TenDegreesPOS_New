@@ -9,6 +9,8 @@ namespace TenDegreesPOS_New.Models
         [Key]
         public int Id { get; set; }
 
+        public DateTime? ExpirationDate { get; set; }
+        public decimal DamagedQuantity { get; set; } = 0;
         public int? ProductId { get; set; }
 
         public int? IngredientId { get; set; }

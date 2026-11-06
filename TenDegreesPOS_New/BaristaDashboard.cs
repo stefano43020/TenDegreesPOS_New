@@ -387,14 +387,18 @@ namespace TenDegreesPOS_New
 
             if (isCompleted)
             {
-                Label lblOrderNo = new Label { Text = $"#{order.TransactionNumber.Split('-').Last()}", Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = DeepSeekTextMuted, Location = new Point(15, 15), AutoSize = true };
+                string dailyOrderNum = order.TransactionNumber.Substring(order.TransactionNumber.Length - 4).TrimStart('0');
+                if (string.IsNullOrEmpty(dailyOrderNum)) dailyOrderNum = "0";
+                Label lblOrderNo = new Label { Text = $"#{dailyOrderNum}", Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = DeepSeekTextMuted, Location = new Point(15, 15), AutoSize = true };
                 Label lblStatus = new Label { Text = "COMPLETED", Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = DeepSeekSuccess, Location = new Point(240, 17), Size = new Size(90, 18), TextAlign = ContentAlignment.MiddleCenter };
                 Label lblItems = new Label { Text = string.Join(", ", order.Items.ConvertAll(i => $"{i.Quantity}x {i.ProductName}")), Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(100, 100, 100), Location = new Point(15, 40), Size = new Size(320, 20), AutoEllipsis = true };
                 card.Controls.AddRange(new Control[] { lblOrderNo, lblStatus, lblItems });
             }
             else
             {
-                Label lblOrderNo = new Label { Text = $"#{order.TransactionNumber.Split('-').Last()}", Font = new Font("Segoe UI", 14, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
+                string dailyOrderNum = order.TransactionNumber.Substring(order.TransactionNumber.Length - 4).TrimStart('0');
+                if (string.IsNullOrEmpty(dailyOrderNum)) dailyOrderNum = "0";
+                Label lblOrderNo = new Label { Text = $"#{dailyOrderNum}", Font = new Font("Segoe UI", 14, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
                 Label lblStatus = new Label { Text = "WAITING", Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = DeepSeekWarning, BackColor = Color.FromArgb(60, 45, 20), Location = new Point(200, 18), Size = new Size(100, 22), TextAlign = ContentAlignment.MiddleCenter };
                 Label lblItems = new Label { Text = string.Join("\n", order.Items.ConvertAll(i => $"• {i.Quantity}x {i.ProductName} {i.Size}")), Font = new Font("Segoe UI", 11), ForeColor = DeepSeekTextMuted, Location = new Point(15, 55), Size = new Size(290, 100), AutoEllipsis = true };
 

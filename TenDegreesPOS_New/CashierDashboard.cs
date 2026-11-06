@@ -135,7 +135,7 @@ namespace TenDegreesPOS_New
         private void SetupCashierControls()
         {
             btnHome = CreateSidebarButton("🏠 Home", 10, BtnHome_Click!);
-            btnQueue = CreateSidebarButton("📋 Live Queue", 60, BtnQueue_Click!);
+            btnQueue = CreateSidebarButton("📋 Order Queue", 60, BtnQueue_Click!);
             btnHistory = CreateSidebarButton("📋 History", 110, BtnHistory_Click!);
             btnInventory = CreateSidebarButton("📦 Inventory", 160, BtnInventory_Click!);
             btnSettings = CreateSidebarButton("⚙ Settings", 210, BtnSettings_Click!);
@@ -280,16 +280,26 @@ namespace TenDegreesPOS_New
             });
         }
 
-        // ▼▼▼ NEW HELPER METHOD ▼▼▼
         private void AddCardToCashierQueue(NetworkOrder order)
         {
-            // ... existing duplicate check ...
+            // Extract just the daily sequence number (e.g. "INV202611060005" -> "5")
+            string dailyNumber = "0";
+            if (order.TransactionNumber.Length >= 4)
+            {
+                // Take the last 4 characters (e.g., "0005")
+                string suffix = order.TransactionNumber.Substring(order.TransactionNumber.Length - 4);
+                // Convert to int to remove leading zeros ("0005" -> "5"), then back to string
+                if (int.TryParse(suffix, out int parsedNum))
+                {
+                    dailyNumber = parsedNum.ToString();
+                }
+            }
 
             Panel card = new Panel { Size = new Size(300, 180), BackColor = DeepSeekSurface, Margin = new Padding(10), Tag = order.TransactionNumber };
 
-            Label lblOrderNo = new Label { Text = $"#{order.TransactionNumber.Split('-').Last()}", Font = new Font("Segoe UI", 12, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
-
-            // ▼▼▼ ADD Name = "lblStatus" ▼▼▼
+            // ▼▼▼ USE THE DAILY NUMBER HERE ▼▼▼
+            Label lblOrderNo = new Label { Text = $"#{dailyNumber}", Font = new Font("Segoe UI", 12, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
+            // ▲▲▲ END OF CHANGE ▲▲▲
             Label lblStatus = new Label { Name = "lblStatus", Text = "WAITING", Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = DeepSeekWarning, Location = new Point(200, 18), AutoSize = true };
 
             string itemsText = string.Join("\n", order.Items.ConvertAll(i => $"• {i.Quantity}x {i.ProductName} {i.Size}"));
@@ -1746,16 +1756,19 @@ namespace TenDegreesPOS_New
         {
             if (lblSubTotal == null || lblTax == null || lblDiscount == null || lblTotal == null) return;
 
-            decimal subTotal = cartItems.Sum(item => item.Price * item.Quantity);
-            decimal discountAmount = currentDiscountAmount;
-            decimal discountedSubTotal = subTotal - discountAmount;
+            // 1. The cart sum is now the TOTAL (VAT Inclusive)
+            decimal total = cartItems.Sum(item => item.Price * item.Quantity) - currentDiscountAmount;
+
+            // 2. Tax is exactly 12% of the Total
             decimal taxRate = 0.12m;
-            decimal tax = discountedSubTotal * taxRate / (1 + taxRate);
-            decimal total = discountedSubTotal;
+            decimal tax = total * taxRate;
+
+            // 3. Subtotal is the Total minus the Tax
+            decimal subTotal = total - tax;
 
             lblSubTotal.Text = $"₱{subTotal:N2}";
             lblTax.Text = $"₱{tax:N2}";
-            lblDiscount.Text = $"₱{discountAmount:N2}";
+            lblDiscount.Text = $"₱{currentDiscountAmount:N2}";
             lblTotal.Text = $"₱{total:N2}";
         }
 
@@ -1793,11 +1806,19 @@ namespace TenDegreesPOS_New
 
             try
             {
-                decimal subTotal = cartItems.Sum(item => item.Price * item.Quantity);
+                
                 decimal discountAmount = currentDiscountAmount;
-                decimal discountedSubTotal = subTotal - discountAmount;
-                decimal tax = discountedSubTotal * 0.12m / 1.12m;
-                decimal total = discountedSubTotal;
+
+                // 1. Cart sum is the TOTAL
+                decimal grossTotal = cartItems.Sum(item => item.Price * item.Quantity);
+                decimal total = grossTotal - currentDiscountAmount;
+
+                // 2. Tax is 12% of the Total
+                decimal taxRate = 0.12m;
+                decimal tax = total * taxRate;
+
+                // 3. Subtotal is Total minus Tax
+                decimal subTotal = total - tax;
 
                 using (Form paymentDialog = new Form())
                 {
@@ -2042,12 +2063,10 @@ namespace TenDegreesPOS_New
 
                         paymentDialog.DialogResult = DialogResult.OK;
 
-                        DialogResult printResult = MessageBox.Show("Print receipt?", "Receipt",
-                            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-                        if (printResult == DialogResult.Yes)
+                        // Show the preview form instead of asking directly
+                        using (var preview = new ReceiptPreviewForm(savedTransaction, userName, GeneratePDFReceipt))
                         {
-                            GeneratePDFReceipt(savedTransaction);
+                            preview.ShowDialog();
                         }
                     };
 
@@ -2423,12 +2442,10 @@ namespace TenDegreesPOS_New
 
                         dlg.DialogResult = DialogResult.OK;
 
-                        DialogResult printResult = MessageBox.Show("Print receipt?", "Receipt",
-                            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-                        if (printResult == DialogResult.Yes)
+                        // Show the preview form instead of asking directly
+                        using (var preview = new ReceiptPreviewForm(savedTransaction, userName, GeneratePDFReceipt))
                         {
-                            GeneratePDFReceipt(savedTransaction);
+                            preview.ShowDialog();
                         }
                     };
 
@@ -2923,8 +2940,79 @@ namespace TenDegreesPOS_New
             };
             btnFilter.Click += BtnFilter_Click!;
 
+            // ▼▼▼ ADDED: Request Cancellation Button ▼▼▼
+            Button btnRequestCancel = new Button
+            {
+                Text = "🚫 Request Cancellation",
+                Location = new Point(580, 77),
+                Size = new Size(180, 35),
+                BackColor = DeepSeekDanger,
+                ForeColor = DeepSeekText,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                FlatAppearance = { BorderSize = 0 }
+            };
+
+            btnRequestCancel.Click += (s, e) =>
+            {
+                if (dgvTransactions?.CurrentRow == null)
+                {
+                    MessageBox.Show("Please select a transaction first.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                string status = dgvTransactions.CurrentRow.Cells["Status"].Value?.ToString() ?? "";
+                if (status != "Completed" && status != "Fulfilled")
+                {
+                    MessageBox.Show("Only 'Completed' or 'Fulfilled' orders can be requested for cancellation.", "Invalid Status", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Get the Transaction Number (since the ID column isn't visible, we look it up)
+                string txNumber = dgvTransactions.CurrentRow.Cells["Id"].Value?.ToString() ?? "";
+                var transaction = dbService.GetTransactionByNumber(txNumber);
+
+                if (transaction == null) return;
+
+                using (Form prompt = new Form())
+                {
+                    prompt.Text = "Request Cancellation";
+                    prompt.Size = new Size(400, 250);
+                    prompt.StartPosition = FormStartPosition.CenterParent;
+                    prompt.BackColor = DeepSeekSurface;
+                    prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
+
+                    Label lblMsg = new Label { Text = "Reason for cancellation:", Location = new Point(20, 20), AutoSize = true, ForeColor = DeepSeekText };
+                    ComboBox cmbReason = new ComboBox { Location = new Point(20, 50), Size = new Size(340, 35), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = DeepSeekBg, ForeColor = DeepSeekText };
+                    cmbReason.Items.AddRange(new object[] { "Customer requested cancellation", "Order processing error", "Item out of stock", "Payment issue", "Duplicate order", "Other" });
+                    cmbReason.SelectedIndex = 0;
+
+                    Button btnSubmit = new Button { Text = "Submit Request", Location = new Point(20, 100), Size = new Size(150, 40), BackColor = DeepSeekDanger, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, DialogResult = DialogResult.OK };
+
+                    prompt.Controls.AddRange(new Control[] { lblMsg, cmbReason, btnSubmit });
+
+                    if (prompt.ShowDialog() == DialogResult.OK)
+                    {
+                        try
+                        {
+                            dbService.RequestCancellation(transaction.Id, userId, cmbReason.SelectedItem.ToString()!);
+                            MessageBox.Show("Cancellation request submitted. Waiting for Admin approval.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            LoadTransactions(); // Refresh grid
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show(ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    }
+                }
+            };
+            // ▲▲▲ END OF ADDED BUTTON ▲▲▲
+
             dgvTransactions = CreateDataGridView(new Point(30, 130), new Size(1700, 700));
+            dgvTransactions.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+
             dgvTransactions.Columns.Add("Id", "Transaction #");
+            dgvTransactions.Columns.Add("QueueNum", "Queue #");
             dgvTransactions.Columns.Add("Date", "Date");
             dgvTransactions.Columns.Add("Items", "Items");
             dgvTransactions.Columns.Add("SubTotal", "Sub Total");
@@ -2934,9 +3022,20 @@ namespace TenDegreesPOS_New
             dgvTransactions.Columns.Add("PaymentDetail", "Payment Detail");
             dgvTransactions.Columns.Add("Status", "Status");
 
+            // Right-align total amount column
+            dgvTransactions.Columns["Total"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+
             LoadTransactions();
 
-            pnlContent.Controls.AddRange(new Control[] { lblTitle, lblFrom, dtpFrom, lblTo, dtpTo, btnFilter, dgvTransactions });
+            // ▼▼▼ FIXED: Ensure btnRequestCancel is added to the screen ▼▼▼
+            pnlContent.Controls.AddRange(new Control[] {
+                lblTitle,
+                lblFrom, dtpFrom,
+                lblTo, dtpTo,
+                btnFilter,
+                btnRequestCancel, // Added to the UI
+                dgvTransactions
+            });
         }
 
         private string GetPaymentDetail(Transaction t)
@@ -2959,30 +3058,44 @@ namespace TenDegreesPOS_New
         {
             if (dgvTransactions == null) return;
             dgvTransactions.Rows.Clear();
-            var transactions = dbService.GetTransactionsByCashier(userId);
+            var transactions = dbService.GetTransactionsByCashier(userId).OrderBy(t => t.TransactionDate).ToList();
 
-            foreach (var t in transactions)
+            // Group by date so we can calculate the daily queue number
+            var groupedByDate = transactions.GroupBy(t => t.TransactionDate.Date);
+
+            foreach (var group in groupedByDate)
             {
-                int itemCount = t.TransactionItems?.Count ?? 0;
-                int rowIndex = dgvTransactions.Rows.Add(
-                    t.TransactionNumber,
-                    t.TransactionDate.ToString("yyyy-MM-dd HH:mm"),
-                    itemCount,
-                    $"₱{t.SubTotal:N2}",
-                    $"₱{t.Tax:N2}",
-                    $"₱{t.Total:N2}",
-                    t.PaymentMethod,
-                    GetPaymentDetail(t),
-                    t.Status
-                );
+                int dailyQueueCounter = 1;
+                foreach (var t in group.OrderBy(x => x.TransactionDate))
+                {
+                    int itemCount = t.TransactionItems?.Count ?? 0;
+                    int rowIndex = dgvTransactions.Rows.Add(
+                        t.TransactionNumber,
+                        $"#{dailyQueueCounter}", // ▼▼▼ Queue Number ▼▼▼
+                        t.TransactionDate.ToString("yyyy-MM-dd HH:mm"),
+                        itemCount,
+                        $"₱{t.SubTotal:N2}",
+                        $"₱{t.Tax:N2}",
+                        $"₱{t.Total:N2}",
+                        t.PaymentMethod,
+                        GetPaymentDetail(t),
+                        t.Status
+                    );
 
-                if (t.Status == "Completed")
-                    dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekSuccess;
-                else if (t.Status == "Refunded")
-                    dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekWarning;
-                else if (t.Status == "Cancelled")
-                    dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekDanger;
+                    // Apply coloring
+                    if (t.Status == "Completed")
+                        dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekSuccess;
+                    else if (t.Status == "Refunded")
+                        dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekWarning;
+                    else if (t.Status == "Cancelled")
+                        dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekDanger;
+
+                    dailyQueueCounter++;
+                }
             }
+
+            // If you want newest at the top (like the original view), reverse the rows
+            dgvTransactions.Sort(dgvTransactions.Columns["Date"], System.ComponentModel.ListSortDirection.Descending);
         }
 
         private void BtnFilter_Click(object sender, EventArgs e)
@@ -2993,30 +3106,42 @@ namespace TenDegreesPOS_New
             var allTransactions = dbService.GetTransactionsByCashier(userId);
             var filtered = allTransactions.Where(t =>
                 t.TransactionDate.Date >= dtpFrom.Value.Date &&
-                t.TransactionDate.Date <= dtpTo.Value.Date);
+                t.TransactionDate.Date <= dtpTo.Value.Date).OrderBy(t => t.TransactionDate).ToList();
 
-            foreach (var t in filtered)
+            // Group by date so we can calculate the daily queue number
+            var groupedByDate = filtered.GroupBy(t => t.TransactionDate.Date);
+
+            foreach (var group in groupedByDate)
             {
-                int itemCount = t.TransactionItems?.Count ?? 0;
-                int rowIndex = dgvTransactions.Rows.Add(
-                    t.TransactionNumber,
-                    t.TransactionDate.ToString("yyyy-MM-dd HH:mm"),
-                    itemCount,
-                    $"₱{t.SubTotal:N2}",
-                    $"₱{t.Tax:N2}",
-                    $"₱{t.Total:N2}",
-                    t.PaymentMethod,
-                    GetPaymentDetail(t),
-                    t.Status
-                );
+                int dailyQueueCounter = 1;
+                foreach (var t in group.OrderBy(x => x.TransactionDate))
+                {
+                    int itemCount = t.TransactionItems?.Count ?? 0;
+                    int rowIndex = dgvTransactions.Rows.Add(
+                        t.TransactionNumber,
+                        $"#{dailyQueueCounter}",
+                        t.TransactionDate.ToString("yyyy-MM-dd HH:mm"),
+                        itemCount,
+                        $"₱{t.SubTotal:N2}",
+                        $"₱{t.Tax:N2}",
+                        $"₱{t.Total:N2}",
+                        t.PaymentMethod,
+                        GetPaymentDetail(t),
+                        t.Status
+                    );
 
-                if (t.Status == "Completed")
-                    dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekSuccess;
-                else if (t.Status == "Refunded")
-                    dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekWarning;
-                else if (t.Status == "Cancelled")
-                    dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekDanger;
+                    if (t.Status == "Completed")
+                        dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekSuccess;
+                    else if (t.Status == "Refunded")
+                        dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekWarning;
+                    else if (t.Status == "Cancelled")
+                        dgvTransactions.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekDanger;
+
+                    dailyQueueCounter++;
+                }
             }
+
+            dgvTransactions.Sort(dgvTransactions.Columns["Date"], System.ComponentModel.ListSortDirection.Descending);
         }
 
         // ============================================================
@@ -3028,49 +3153,67 @@ namespace TenDegreesPOS_New
             if (pnlContent == null) return;
             pnlContent.Controls.Clear();
 
-            Label lblTitle = new Label
-            {
-                Text = "Inventory",
-                Font = new Font("Segoe UI", 24, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                Location = new Point(30, 20),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
+            Label lblTitle = new Label { Text = "Inventory", Font = new Font("Segoe UI", 24, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(30, 20), AutoSize = true };
 
-            Label lblSearch = new Label
+            TabControl tcInventory = new TabControl
             {
-                Text = "Search:",
-                Font = new Font("Segoe UI", 11, FontStyle.Bold),
-                ForeColor = DeepSeekTextMuted,
                 Location = new Point(30, 80),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            txtSearchInventory = new TextBox
-            {
-                Location = new Point(100, 77),
-                Size = new Size(300, 35),
+                Size = new Size(pnlContent.Width - 60, pnlContent.Height - 120),
                 Font = new Font("Segoe UI", 11),
-                PlaceholderText = "Search ingredients...",
-                BackColor = DeepSeekSurface,
-                ForeColor = DeepSeekText,
-                BorderStyle = BorderStyle.FixedSingle
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
-            txtSearchInventory.TextChanged += TxtSearchInventory_TextChanged!;
 
-            dgvInventory = CreateDataGridView(new Point(30, 130), new Size(1700, 700));
-            dgvInventory.Columns.Add("Item", "Item");
-            dgvInventory.Columns.Add("Type", "Type");
-            dgvInventory.Columns.Add("Quantity", "Quantity");
-            dgvInventory.Columns.Add("Unit", "Unit");
-            dgvInventory.Columns.Add("MinStock", "Min Stock");
-            dgvInventory.Columns.Add("Status", "Status");
+            TabPage tpIngredients = new TabPage("Ingredients");
+            TabPage tpMaterials = new TabPage("Materials");
+            tpIngredients.BackColor = DeepSeekBg;
+            tpMaterials.BackColor = DeepSeekBg;
 
-            LoadInventory();
+            DataGridView dgvIng = CreateDataGridView(new Point(10, 10), new Size(tcInventory.Width - 30, tcInventory.Height - 40));
+            DataGridView dgvMat = CreateDataGridView(new Point(10, 10), new Size(tcInventory.Width - 30, tcInventory.Height - 40));
 
-            pnlContent.Controls.AddRange(new Control[] { lblTitle, lblSearch, txtSearchInventory, dgvInventory });
+            dgvIng.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            dgvMat.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+
+            foreach (var grid in new[] { dgvIng, dgvMat })
+            {
+                grid.Columns.Add("Item", "Item");
+                grid.Columns.Add("Quantity", "Quantity");
+                grid.Columns.Add("Unit", "Unit");
+                grid.Columns.Add("MinStock", "Min Stock");
+                grid.Columns.Add("Status", "Status");
+            }
+
+            // Load Data
+            var inventory = dbService.GetAllInventory();
+            foreach (var item in inventory)
+            {
+                if (item.Ingredient == null) continue; // Only show Ingredients, not finished Products
+
+                var grid = item.Ingredient.ItemType == "Material" ? dgvMat : dgvIng;
+
+                string status = item.Quantity <= 0 ? "Out of Stock" :
+                               item.Quantity < item.Ingredient.MinimumStock ? "Low Stock" : "In Stock";
+
+                int rowIndex = grid.Rows.Add(
+                    item.Ingredient.Name,
+                    $"{item.Quantity:F1}",
+                    item.Unit,
+                    item.Ingredient.MinimumStock,
+                    status
+                );
+
+                if (item.Quantity <= 0) grid.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekDanger;
+                else if (item.Quantity < item.Ingredient.MinimumStock) grid.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekWarning;
+                else grid.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekSuccess;
+            }
+
+            tpIngredients.Controls.Add(dgvIng);
+            tpMaterials.Controls.Add(dgvMat);
+
+            tcInventory.TabPages.Add(tpIngredients);
+            tcInventory.TabPages.Add(tpMaterials);
+
+            pnlContent.Controls.AddRange(new Control[] { lblTitle, tcInventory });
         }
 
         private void LoadInventory()
