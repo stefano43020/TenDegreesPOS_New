@@ -30,6 +30,8 @@ namespace TenDegreesPOS_New.Data
         public DbSet<PurchaseOrderItem> PurchaseOrderItems { get; set; }
         public DbSet<SupplierIngredient> SupplierIngredients { get; set; }
 
+        public DbSet<DisposalRecord> DisposalRecords { get; set; }
+
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             string dbPath = Path.Combine(
@@ -53,6 +55,13 @@ namespace TenDegreesPOS_New.Data
                 .WithMany(p => p.ProductIngredients)
                 .HasForeignKey(pi => pi.ProductId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<DisposalRecord>(entity =>
+            {
+                entity.Property(dr => dr.Quantity).HasColumnType("DECIMAL");
+                entity.HasOne(dr => dr.Ingredient).WithMany().HasForeignKey(dr => dr.IngredientId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(dr => dr.DisposedByUser).WithMany().HasForeignKey(dr => dr.DisposedByUserId).OnDelete(DeleteBehavior.Restrict);
+            });
 
             modelBuilder.Entity<InventoryBatch>()
     .HasOne(ib => ib.Inventory)

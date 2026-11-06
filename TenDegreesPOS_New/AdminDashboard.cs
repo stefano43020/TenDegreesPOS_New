@@ -622,7 +622,6 @@ namespace TenDegreesPOS_New
 
         private void ShowMonitoringModule()
         {
-
             dbService.ProcessExpiredBatches();
 
             if (pnlContent == null) return;
@@ -650,14 +649,43 @@ namespace TenDegreesPOS_New
             TabPage tpExpired = new TabPage("  ❌ Expired  ") { BackColor = DeepSeekBg };
             TabPage tpStockLevels = new TabPage("  📦 Stock Levels  ") { BackColor = DeepSeekBg };
             TabPage tpDamaged = new TabPage("  🛠 Damaged Items  ") { BackColor = DeepSeekBg };
+            TabPage tpDisposal = new TabPage("  🗑 Disposal Records  ") { BackColor = DeepSeekBg };
 
-            // Build contents for each tab
+            // Setup the disposal grid
+            var disposalGrid = CreateDataGridView(new Point(15, 15), new Size(tpDisposal.Width - 30, tpDisposal.Height - 30));
+            disposalGrid.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            disposalGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+
+            disposalGrid.Columns.Add("Item", "Item Name");
+            disposalGrid.Columns.Add("Qty", "Quantity");
+            disposalGrid.Columns.Add("Expired", "Expired On");
+            disposalGrid.Columns.Add("Date", "Disposed On");
+            disposalGrid.Columns.Add("By", "Disposed By");
+            disposalGrid.Columns.Add("Reason", "Reason");
+
+            var records = dbService.GetAllDisposalRecords();
+            foreach (var r in records)
+            {
+                disposalGrid.Rows.Add(
+                    r.IngredientName,
+                    $"{r.Quantity:F1} {r.Unit}",
+                    r.ExpirationDate.ToString("MMM dd, yyyy"),
+                    r.DisposalDate.ToString("MMM dd, yyyy HH:mm"),
+                    r.DisposedByUser?.FullName ?? r.DisposedByUser?.Username ?? "Unknown",
+                    r.Reason ?? "-"
+                );
+            }
+            tpDisposal.Controls.Add(disposalGrid);
+
+            // Build contents for each tab (This MUST happen before adding to the TabControl)
             SetupMonitoringGrid(tpNearlyExpired, "NearlyExpired");
             SetupMonitoringGrid(tpExpired, "Expired");
             SetupMonitoringGrid(tpStockLevels, "StockLevels");
             SetupMonitoringGrid(tpDamaged, "Damaged");
 
-            tcMonitoring.TabPages.AddRange(new TabPage[] { tpNearlyExpired, tpExpired, tpStockLevels, tpDamaged });
+            // Add to TabControl ONCE
+            tcMonitoring.TabPages.AddRange(new TabPage[] { tpNearlyExpired, tpExpired, tpStockLevels, tpDamaged, tpDisposal });
+
             StyleTabControl(tcMonitoring);
 
             pnlContent.Controls.AddRange(new Control[] { lblTitle, tcMonitoring });
@@ -692,17 +720,8 @@ namespace TenDegreesPOS_New
                 // Use batches for expiration tracking
                 var batches = dbService.GetAllInventoryBatches();
 
+
                 
-                if (filterType == "Expired")
-                {
-                    // Sort Descending: Most recent expiration date first (e.g., Yesterday, then Last Week, etc.)
-                    batches = batches.OrderByDescending(b => b.ExpirationDate).ToList();
-                }
-                else if (filterType == "NearlyExpired")
-                {
-                    // Sort Ascending: Expiring soonest first (e.g., Today, then Tomorrow, etc.)
-                    batches = batches.OrderBy(b => b.ExpirationDate).ToList();
-                }
 
 
                 foreach (var batch in batches)
@@ -748,6 +767,7 @@ namespace TenDegreesPOS_New
                             status
                         );
 
+                        dgv.Rows[rowIndex].Tag = batch;
                         dgv.Rows[rowIndex].Cells["Status"].Style.ForeColor = statusColor;
                         dgv.Rows[rowIndex].Cells["Status"].Style.Font = new Font("Segoe UI", 9, FontStyle.Bold);
                     }
@@ -810,6 +830,63 @@ namespace TenDegreesPOS_New
                 dgv.Height = tab.Height - 30;
             };
         }
+
+        private void ShowDisposalDialog(Ingredient ingredient)
+        {
+            var inventory = dbService.GetInventoryForIngredient(ingredient.Id);
+            decimal currentStock = inventory?.Quantity ?? 0;
+
+            if (currentStock <= 0)
+            {
+                MessageBox.Show($"There is no stock of '{ingredient.Name}' to dispose.", "No Stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using (Form dialog = new Form())
+            {
+                dialog.Text = $"Dispose Item - {ingredient.Name}";
+                dialog.Size = new Size(420, 320);
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.BackColor = DeepSeekSurface;
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.MaximizeBox = false;
+                dialog.MinimizeBox = false;
+
+                Label lblName = new Label { Text = $"Item: {ingredient.Name}", Location = new Point(20, 20), AutoSize = true, ForeColor = DeepSeekText, Font = new Font("Segoe UI", 12, FontStyle.Bold) };
+                Label lblStock = new Label { Text = $"Available Stock: {currentStock:F1} {ingredient.Unit}", Location = new Point(20, 50), AutoSize = true, ForeColor = DeepSeekTextMuted, Font = new Font("Segoe UI", 10) };
+
+                Label lblQty = new Label { Text = "Quantity to Dispose:", Location = new Point(20, 90), AutoSize = true, ForeColor = DeepSeekTextMuted };
+                NumericUpDown nudQty = new NumericUpDown { Location = new Point(160, 87), Size = new Size(100, 30), Minimum = 0.1m, Maximum = currentStock, Value = currentStock, DecimalPlaces = 2, BackColor = DeepSeekBg, ForeColor = DeepSeekText, Font = new Font("Segoe UI", 11) };
+
+                Label lblUnit = new Label { Text = ingredient.Unit, Location = new Point(270, 90), AutoSize = true, ForeColor = DeepSeekTextMuted, Font = new Font("Segoe UI", 10) };
+
+                Label lblReason = new Label { Text = "Reason:", Location = new Point(20, 135), AutoSize = true, ForeColor = DeepSeekTextMuted };
+                TextBox txtReason = new TextBox { Location = new Point(160, 132), Size = new Size(220, 30), PlaceholderText = "e.g., Bottle broke, Damaged in storage", BackColor = DeepSeekBg, ForeColor = DeepSeekText, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10) };
+
+                Button btnConfirm = new Button { Text = "Confirm Disposal", Location = new Point(80, 220), Size = new Size(160, 40), BackColor = DeepSeekDanger, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 11, FontStyle.Bold), DialogResult = DialogResult.OK };
+                Button btnCancel = new Button { Text = "Cancel", Location = new Point(260, 220), Size = new Size(100, 40), BackColor = DeepSeekTextMuted, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 11, FontStyle.Bold), DialogResult = DialogResult.Cancel };
+
+                dialog.Controls.AddRange(new Control[] { lblName, lblStock, lblQty, nudQty, lblUnit, lblReason, txtReason, btnConfirm, btnCancel });
+
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        int invId = inventory.Id;
+                        dbService.LogDisposal(invId, nudQty.Value, userId, txtReason.Text);
+                        MessageBox.Show("Item disposed successfully. Stock has been reduced.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                        // Refresh the inventory list and monitoring tab
+                        LoadIngredientLibrary();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
         private Panel CreateStockOverviewPanelFullWidth(int yPosition)
         {
             Panel pnlStock = new Panel
@@ -5451,7 +5528,38 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             };
             btnReorder.Click += BtnReorderIngredient_Click!;
 
-            pnlSearch.Controls.AddRange(new Control[] { txtSearchIngredient, cmbInventoryFilter, btnAddIngredient, btnEditSelected, btnToggleSelected, btnReorder });
+            // ▼▼▼ NEW DISPOSE BUTTON ▼▼▼
+            Button btnDisposeItem = new Button
+            {
+                Text = "🗑 Dispose",
+                Location = new Point(930, 8),
+                Size = new Size(110, 35),
+                BackColor = DeepSeekDanger,
+                ForeColor = DeepSeekText,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                FlatAppearance = { BorderSize = 0 }
+            };
+
+            btnDisposeItem.Click += (s, e) =>
+            {
+                if (dgvIngredientLibrary?.CurrentRow == null)
+                {
+                    MessageBox.Show("Please select an item to dispose.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                string ingredientName = dgvIngredientLibrary.CurrentRow.Cells["Name"].Value?.ToString();
+                if (string.IsNullOrEmpty(ingredientName)) return;
+
+                var ingredient = dbService.GetAllIngredients().FirstOrDefault(i => i.Name == ingredientName);
+                if (ingredient != null)
+                {
+                    ShowDisposalDialog(ingredient);
+                }
+            };
+
+            pnlSearch.Controls.AddRange(new Control[] { txtSearchIngredient, cmbInventoryFilter, btnAddIngredient, btnEditSelected, btnToggleSelected, btnReorder, btnDisposeItem });
 
             // 4. The Single Table
             dgvIngredientLibrary = CreateDataGridView(new Point(30, 220), new Size(pnlContent.Width - 60, 300));

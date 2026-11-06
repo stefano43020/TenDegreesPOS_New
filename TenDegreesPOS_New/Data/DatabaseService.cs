@@ -65,6 +65,25 @@ namespace TenDegreesPOS_New.Services
             {
                 Console.WriteLine($"Create InventoryBatches skipped: {e.Message}");
             }
+            // ---- Disposal Records ----
+            try
+            {
+                _context.Database.ExecuteSqlRaw(@"
+                    CREATE TABLE IF NOT EXISTS DisposalRecords (
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        IngredientId INTEGER NOT NULL,
+                        IngredientName TEXT NOT NULL,
+                        Quantity DECIMAL NOT NULL,
+                        Unit TEXT NOT NULL,
+                        ExpirationDate TEXT NOT NULL,
+                        DisposalDate TEXT NOT NULL,
+                        DisposedByUserId INTEGER NOT NULL,
+                        Reason TEXT,
+                        FOREIGN KEY(IngredientId) REFERENCES Ingredients(Id) ON DELETE RESTRICT,
+                        FOREIGN KEY(DisposedByUserId) REFERENCES Users(Id) ON DELETE RESTRICT
+                    );");
+            }
+            catch (Exception e) { Console.WriteLine($"Create DisposalRecords skipped: {e.Message}"); }
 
             // ---- Products ----
             TryAddColumn("Products", "HasSizes", "INTEGER DEFAULT 0");
@@ -123,6 +142,78 @@ namespace TenDegreesPOS_New.Services
 
         #region Supplier Management
 
+        public void LogDisposal(int inventoryId, decimal quantity, int userId, string reason)
+        {
+            using var dbTransaction = _context.Database.BeginTransaction();
+            try
+            {
+                var inventory = _context.Inventory
+                    .Include(i => i.Ingredient)
+                    .FirstOrDefault(i => i.Id == inventoryId);
+
+                if (inventory == null) throw new Exception("Inventory item not found");
+                if (quantity <= 0) throw new Exception("Quantity must be greater than zero");
+                if (quantity > inventory.Quantity) throw new Exception("Cannot dispose more than current stock");
+
+                // Find the batch to deduct from (FIFO: Oldest first)
+                var batch = _context.InventoryBatches
+                    .Where(b => b.InventoryId == inventoryId && b.Quantity > 0)
+                    .OrderBy(b => b.ExpirationDate)
+                    .FirstOrDefault();
+
+                // 1. Deduct from Inventory
+                inventory.Quantity -= quantity;
+                inventory.LastUpdated = DateTime.Now;
+
+                // 2. Deduct from the Batch if one exists
+                if (batch != null)
+                {
+                    batch.Quantity -= quantity;
+                    if (batch.Quantity < 0) batch.Quantity = 0;
+                }
+
+                // 3. Create Disposal Record
+                var record = new DisposalRecord
+                {
+                    IngredientId = inventory.IngredientId ?? 0,
+                    IngredientName = inventory.Ingredient?.Name ?? "Unknown",
+                    Quantity = quantity,
+                    Unit = inventory.Unit,
+                    // If the batch has an expiration date, log it; otherwise default
+                    ExpirationDate = batch?.ExpirationDate ?? DateTime.Today,
+                    DisposalDate = DateTime.Now,
+                    DisposedByUserId = userId,
+                    Reason = reason
+                };
+
+                _context.DisposalRecords.Add(record);
+                _context.SaveChanges();
+                dbTransaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                dbTransaction.Rollback();
+                throw new Exception($"Error logging disposal: {ex.Message}", ex);
+            }
+        }
+
+        public int GetPendingOrderCount()
+        {
+            try
+            {
+                return _context.Transactions
+                    .Count(t => t.Status == "Completed" && t.TransactionDate.Date == DateTime.Today);
+            }
+            catch { return 0; }
+        }
+
+        public List<DisposalRecord> GetAllDisposalRecords()
+        {
+            return _context.DisposalRecords
+                .Include(dr => dr.DisposedByUser)
+                .OrderByDescending(dr => dr.DisposalDate)
+                .ToList();
+        }
         public List<Supplier> GetAllSuppliers()
         {
             try

@@ -41,8 +41,11 @@ namespace TenDegreesPOS_New
         private Panel? pnlInventory;
         private Panel? pnlSettings;
 
+        private Label? lblQueueBadge;
+
         // Home/Order panel controls
         private FlowLayoutPanel? flpCategories;
+        private FlowLayoutPanel flpPreparingQueue;
         private FlowLayoutPanel? flpProducts;
         private DataGridView? dgvCart;
         private Label? lblSubTotal;
@@ -57,6 +60,8 @@ namespace TenDegreesPOS_New
         private ComboBox? cmbSize;
         private Label? lblStockWarning;
         private Product? currentSelectedProduct;
+
+        private HashSet<string> preparingTransactions = new HashSet<string>();
 
         // Cart items
         private List<CartItem> cartItems = new List<CartItem>();
@@ -125,6 +130,16 @@ namespace TenDegreesPOS_New
             _tcpServer.OnMessageReceived += HandleServerMessage;
 
             ShowHome();
+            // Add a timer to refresh the badge every 10 seconds
+            System.Windows.Forms.Timer queueTimer = new System.Windows.Forms.Timer();
+            queueTimer.Interval = 10000; // 10 seconds
+            queueTimer.Tick += (s, e) => {
+                if (btnQueue != null)
+                {
+                    UpdateQueueBadge();
+                }
+            };
+            queueTimer.Start();
         }
 
         private void InitializeComponent()
@@ -132,10 +147,69 @@ namespace TenDegreesPOS_New
             this.Text = "Cashier Dashboard";
         }
 
+        private void UpdateQueueBadge()
+        {
+            if (lblQueueBadge == null) return;
+
+            int queueCount = 0;
+
+            if (flpCashierQueue != null)
+            {
+                // Count only the ones still in the Waiting panel
+                queueCount = flpCashierQueue.Controls.Count;
+            }
+            else
+            {
+                // Fallback to DB if tab isn't open
+                queueCount = dbService.GetAllTransactions()
+                    .Count(t => t.TransactionDate.Date == DateTime.Today && t.Status == "Completed");
+            }
+
+            if (queueCount > 0)
+            {
+                lblQueueBadge.Text = queueCount.ToString();
+                lblQueueBadge.Visible = true;
+            }
+            else
+            {
+                lblQueueBadge.Visible = false;
+            }
+        }
         private void SetupCashierControls()
         {
             btnHome = CreateSidebarButton("🏠 Home", 10, BtnHome_Click!);
+
+            // ▼▼▼ ONLY CREATE btnQueue ONCE ▼▼▼
             btnQueue = CreateSidebarButton("📋 Order Queue", 60, BtnQueue_Click!);
+
+            // Setup the badge
+            lblQueueBadge = new Label
+            {
+                Text = "0",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(239, 68, 68), // Red
+                Size = new Size(22, 22),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Location = new Point(160, 10), // Positioned on the right side of the button
+                Visible = false // Hidden by default
+            };
+
+            // Make it round
+            lblQueueBadge.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    path.AddEllipse(0, 0, lblQueueBadge.Width - 1, lblQueueBadge.Height - 1);
+                    lblQueueBadge.Region = new Region(path);
+                }
+            };
+
+            // ▼▼▼ THIS WAS MISSING: Add the badge to the button ▼▼▼
+            btnQueue.Controls.Add(lblQueueBadge);
+            // ▲▲▲ END OF MISSING CODE ▲▲▲
+
             btnHistory = CreateSidebarButton("📋 History", 110, BtnHistory_Click!);
             btnInventory = CreateSidebarButton("📦 Inventory", 160, BtnInventory_Click!);
             btnSettings = CreateSidebarButton("⚙ Settings", 210, BtnSettings_Click!);
@@ -171,26 +245,49 @@ namespace TenDegreesPOS_New
                             }
                         }
 
-                        if (targetCard == null) return;
-
-                        if (orderMsg.MessageType == "ORDER_PREPARING")
+                        if (orderMsg.MessageType == "NEW_ORDER")
                         {
-                            // Update UI to show it's being made
-                            var lblStatus = targetCard.Controls.OfType<Label>().FirstOrDefault(l => l.Name == "lblStatus");
-                            if (lblStatus != null)
+                            // Add card if it doesn't exist
+                            if (targetCard == null)
                             {
-                                lblStatus.Text = "PREPARING";
-                                lblStatus.ForeColor = DeepSeekAccent; // Blue
+                                AddCardToCashierQueue(orderMsg);
+                                UpdateQueueBadge(); // Update badge count
                             }
+                        }
+                        else if (orderMsg.MessageType == "ORDER_PREPARING")
+                        {
+                            preparingTransactions.Add(orderMsg.TransactionNumber);
 
-                            // Optional: Change card border to indicate active prep
-                            targetCard.BackColor = Color.FromArgb(30, 40, 55);
+                            if (targetCard != null)
+                            {
+                                var lblStatus = targetCard.Controls.OfType<Label>().FirstOrDefault(l => l.Name == "lblStatus");
+                                if (lblStatus != null)
+                                {
+                                    lblStatus.Text = "PREPARING";
+                                    lblStatus.ForeColor = DeepSeekAccent;
+                                }
+                                targetCard.BackColor = Color.FromArgb(30, 40, 55);
+
+                                // ▼▼▼ MOVE CARD TO PREPARING PANEL ▼▼▼
+                                flpCashierQueue.Controls.Remove(targetCard);
+                                flpPreparingQueue.Controls.Add(targetCard);
+                                // ▲▲▲ END ▼▲▲
+                            }
                         }
                         else if (orderMsg.MessageType == "ORDER_COMPLETED")
                         {
-                            // Remove the card entirely
-                            flpCashierQueue.Controls.Remove(targetCard);
-                            targetCard.Dispose();
+                            preparingTransactions.Remove(orderMsg.TransactionNumber);
+
+                            if (targetCard != null)
+                            {
+                                // Remove from whichever panel it's currently in
+                                if (flpCashierQueue.Controls.Contains(targetCard))
+                                    flpCashierQueue.Controls.Remove(targetCard);
+                                else if (flpPreparingQueue.Controls.Contains(targetCard))
+                                    flpPreparingQueue.Controls.Remove(targetCard);
+
+                                targetCard.Dispose();
+                            }
 
                             // Update DB status
                             var tx = dbService.GetTransactionByNumber(orderMsg.TransactionNumber);
@@ -198,6 +295,8 @@ namespace TenDegreesPOS_New
                             {
                                 dbService.UpdateTransactionStatus(tx.Id, "Fulfilled");
                             }
+
+                            UpdateQueueBadge(); // Update badge count
                         }
                     });
                 }
@@ -225,10 +324,27 @@ namespace TenDegreesPOS_New
 
             Label lblTitle = new Label { Text = "Live Kitchen Queue", Font = new Font("Segoe UI", 24, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(30, 20), AutoSize = true };
 
+            // === WAITING SECTION ===
+            Label lblWaitingTitle = new Label { Text = "⏳ Waiting to be Prepared", Font = new Font("Segoe UI", 14, FontStyle.Bold), ForeColor = DeepSeekWarning, Location = new Point(30, 80), AutoSize = true };
+
             flpCashierQueue = new FlowLayoutPanel
             {
-                Location = new Point(30, 80),
-                Size = new Size(pnlContent.Width - 60, pnlContent.Height - 120),
+                Location = new Point(30, 110),
+                Size = new Size(pnlContent.Width - 60, 250),
+                AutoScroll = true,
+                BackColor = DeepSeekBg,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+            };
+
+            // === PREPARING SECTION ===
+            Label lblPreparingTitle = new Label { Text = "🔥 Currently Preparing", Font = new Font("Segoe UI", 14, FontStyle.Bold), ForeColor = DeepSeekAccent, Location = new Point(30, 380), AutoSize = true };
+
+            flpPreparingQueue = new FlowLayoutPanel
+            {
+                Location = new Point(30, 410),
+                Size = new Size(pnlContent.Width - 60, 250),
                 AutoScroll = true,
                 BackColor = DeepSeekBg,
                 FlowDirection = FlowDirection.LeftToRight,
@@ -236,17 +352,18 @@ namespace TenDegreesPOS_New
                 Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
 
-            pnlContent.Controls.AddRange(new Control[] { lblTitle, flpCashierQueue });
+            pnlContent.Controls.AddRange(new Control[] { lblTitle, lblWaitingTitle, flpCashierQueue, lblPreparingTitle, flpPreparingQueue });
 
             // Handle Resize
-            pnlContent.Resize += (s, e) => { flpCashierQueue.Size = new Size(pnlContent.Width - 60, pnlContent.Height - 120); };
+            pnlContent.Resize += (s, e) => {
+                flpCashierQueue.Width = pnlContent.Width - 60;
+                flpPreparingQueue.Width = pnlContent.Width - 60;
+            };
 
-            // ▼▼▼ LOAD BACKLOG ▼▼▼
-            // Load today's transactions that are still "Completed" (meaning they haven't been voided)
-            // We display them here so the Cashier has context of what's in the kitchen.
+            // Load Backlog (Oldest First)
             var todaysTransactions = dbService.GetAllTransactions()
                 .Where(t => t.TransactionDate.Date == DateTime.Today && t.Status == "Completed")
-                .OrderByDescending(t => t.TransactionDate)
+                .OrderBy(t => t.TransactionDate) // FIFO Sort
                 .ToList();
 
             foreach (var tx in todaysTransactions)
@@ -264,6 +381,7 @@ namespace TenDegreesPOS_New
 
                 AddCardToCashierQueue(netOrder);
             }
+            UpdateQueueBadge();
         }
 
         private void HandleCashierNetworkMessage(NetworkOrder order)
@@ -282,13 +400,11 @@ namespace TenDegreesPOS_New
 
         private void AddCardToCashierQueue(NetworkOrder order)
         {
-            // Extract just the daily sequence number (e.g. "INV202611060005" -> "5")
+            // Extract daily number
             string dailyNumber = "0";
             if (order.TransactionNumber.Length >= 4)
             {
-                // Take the last 4 characters (e.g., "0005")
                 string suffix = order.TransactionNumber.Substring(order.TransactionNumber.Length - 4);
-                // Convert to int to remove leading zeros ("0005" -> "5"), then back to string
                 if (int.TryParse(suffix, out int parsedNum))
                 {
                     dailyNumber = parsedNum.ToString();
@@ -297,16 +413,26 @@ namespace TenDegreesPOS_New
 
             Panel card = new Panel { Size = new Size(300, 180), BackColor = DeepSeekSurface, Margin = new Padding(10), Tag = order.TransactionNumber };
 
-            // ▼▼▼ USE THE DAILY NUMBER HERE ▼▼▼
             Label lblOrderNo = new Label { Text = $"#{dailyNumber}", Font = new Font("Segoe UI", 12, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
-            // ▲▲▲ END OF CHANGE ▲▲▲
             Label lblStatus = new Label { Name = "lblStatus", Text = "WAITING", Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = DeepSeekWarning, Location = new Point(200, 18), AutoSize = true };
 
             string itemsText = string.Join("\n", order.Items.ConvertAll(i => $"• {i.Quantity}x {i.ProductName} {i.Size}"));
             Label lblItems = new Label { Text = itemsText, Font = new Font("Segoe UI", 10), ForeColor = DeepSeekTextMuted, Location = new Point(15, 50), Size = new Size(270, 110) };
 
             card.Controls.AddRange(new Control[] { lblOrderNo, lblStatus, lblItems });
-            flpCashierQueue.Controls.Add(card);
+
+            // Check if it's already in the preparing list
+            if (preparingTransactions.Contains(order.TransactionNumber))
+            {
+                lblStatus.Text = "PREPARING";
+                lblStatus.ForeColor = DeepSeekAccent;
+                card.BackColor = Color.FromArgb(30, 40, 55);
+                flpPreparingQueue.Controls.Add(card);
+            }
+            else
+            {
+                flpCashierQueue.Controls.Add(card);
+            }
         }
 
         private void LoadProductCache()
