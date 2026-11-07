@@ -361,3 +361,18 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Ignore old image location (inside build output)
+bin/Debug/Images/
+bin/Release/Images/
+
+# Ensure ProductImages source folder is tracked
+!ProductImages/
+!ProductImages/**
+
+# Standard .NET ignores
+bin/
+obj/
+.vs/
+*.user
+*.suo
