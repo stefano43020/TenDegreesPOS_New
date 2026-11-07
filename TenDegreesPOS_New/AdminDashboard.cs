@@ -2270,7 +2270,7 @@ namespace TenDegreesPOS_New
             try
             {
                 // Categories that should have Cup sizes as default ingredients
-                string[] cupSizeCategories = new string[] { "Classics", "Signature Coffee", "Frappe Series", "Matcha Series", "Non-Coffee" };
+                string[] cupSizeCategories = new string[] { "Signature Coffee", "Non-Coffee", "Matcha" };
                 bool shouldAddCupSizes = cupSizeCategories.Contains(selectedCategoryName);
 
                 if (selectedProductId.HasValue)
@@ -2407,42 +2407,23 @@ namespace TenDegreesPOS_New
                 // Create them if they don't exist
                 if (smallCup == null)
                 {
-                    smallCup = new Ingredient
-                    {
-                        Name = "Small Cup",
-                        Unit = "pcs",
-                        MinimumStock = 100,
-                        IsActive = true
-                    };
+                    smallCup = new Ingredient { Name = "Small Cup", Unit = "pcs", MinimumStock = 100, IsActive = true };
                     dbService.AddIngredient(smallCup);
                 }
                 if (mediumCup == null)
                 {
-                    mediumCup = new Ingredient
-                    {
-                        Name = "Medium Cup",
-                        Unit = "pcs",
-                        MinimumStock = 100,
-                        IsActive = true
-                    };
+                    mediumCup = new Ingredient { Name = "Medium Cup", Unit = "pcs", MinimumStock = 100, IsActive = true };
                     dbService.AddIngredient(mediumCup);
                 }
                 if (largeCup == null)
                 {
-                    largeCup = new Ingredient
-                    {
-                        Name = "Large Cup",
-                        Unit = "pcs",
-                        MinimumStock = 100,
-                        IsActive = true
-                    };
+                    largeCup = new Ingredient { Name = "Large Cup", Unit = "pcs", MinimumStock = 100, IsActive = true };
                     dbService.AddIngredient(largeCup);
                 }
 
-                // Add them to the product with quantity 0
                 var productIngredients = new List<ProductIngredient>();
 
-                // Small Cup - only if product has sizes
+                // Add Small Cup
                 productIngredients.Add(new ProductIngredient
                 {
                     ProductId = productId,
@@ -2450,10 +2431,11 @@ namespace TenDegreesPOS_New
                     Quantity = 0,
                     QuantitySmall = 1,
                     QuantityMedium = 0,
-                    QuantityLarge = 0
+                    QuantityLarge = 0,
+                    RequiredSize = "Small" // <-- ADDED THIS
                 });
 
-                // Medium Cup
+                // Add Medium Cup
                 productIngredients.Add(new ProductIngredient
                 {
                     ProductId = productId,
@@ -2461,10 +2443,11 @@ namespace TenDegreesPOS_New
                     Quantity = 0,
                     QuantitySmall = 0,
                     QuantityMedium = 1,
-                    QuantityLarge = 0
+                    QuantityLarge = 0,
+                    RequiredSize = "Medium" // <-- ADDED THIS
                 });
 
-                // Large Cup
+                // Add Large Cup
                 productIngredients.Add(new ProductIngredient
                 {
                     ProductId = productId,
@@ -2472,7 +2455,8 @@ namespace TenDegreesPOS_New
                     Quantity = 0,
                     QuantitySmall = 0,
                     QuantityMedium = 0,
-                    QuantityLarge = 1
+                    QuantityLarge = 1,
+                    RequiredSize = "Large" // <-- ADDED THIS
                 });
 
                 dbService.SaveProductIngredients(productId, productIngredients);
@@ -2509,40 +2493,60 @@ namespace TenDegreesPOS_New
         {
             if (cmbIngredient == null) return;
 
-            // Store the current text before clearing
             string searchText = cmbIngredient.Text;
 
             // Temporarily remove the event handler to avoid recursion
             cmbIngredient.TextChanged -= CmbIngredient_TextChanged;
 
-            // Clear and refill items based on search
-            cmbIngredient.BeginUpdate();
-            cmbIngredient.Items.Clear();
-
+            // Filter the list
             var filteredIngredients = allIngredientsList
                 .Where(i => string.IsNullOrEmpty(searchText) || i.Name.ToLower().Contains(searchText.ToLower()))
                 .ToList();
 
-            foreach (var ingredient in filteredIngredients)
+            // Check if the items in the combobox actually match the filtered list to avoid unnecessary rebuilds
+            bool needsRebuild = cmbIngredient.Items.Count != filteredIngredients.Count;
+            if (!needsRebuild)
             {
-                cmbIngredient.Items.Add(ingredient);
+                for (int i = 0; i < filteredIngredients.Count; i++)
+                {
+                    if (cmbIngredient.Items[i] is Ingredient item && item.Id != filteredIngredients[i].Id)
+                    {
+                        needsRebuild = true;
+                        break;
+                    }
+                }
             }
 
-            cmbIngredient.EndUpdate();
+            if (needsRebuild)
+            {
+                cmbIngredient.BeginUpdate();
+                cmbIngredient.Items.Clear();
+                foreach (var ingredient in filteredIngredients)
+                {
+                    cmbIngredient.Items.Add(ingredient);
+                }
+                cmbIngredient.EndUpdate();
+            }
 
-            // Restore the text without triggering the event again
+            // Restore the text
             cmbIngredient.Text = searchText;
 
             // Re-attach the event handler
             cmbIngredient.TextChanged += CmbIngredient_TextChanged;
 
-            // Set cursor position to the end
-            cmbIngredient.SelectionStart = cmbIngredient.Text.Length;
+            // Force cursor to the end and keep focus
+            if (cmbIngredient.Focused)
+            {
+                cmbIngredient.SelectionStart = cmbIngredient.Text.Length;
+                cmbIngredient.SelectionLength = 0;
+            }
 
             // Show dropdown if there are matches
             if (filteredIngredients.Any() && cmbIngredient.Text.Length > 0)
             {
                 cmbIngredient.DroppedDown = true;
+                // Keep the cursor visible in the text box part of the combobox
+                Cursor.Current = Cursors.IBeam;
             }
         }
 
@@ -5966,7 +5970,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             btnCancelIngredient = new Button { Text = "Cancel", Location = new Point(145, 245), Size = new Size(100, 35), BackColor = DeepSeekTextMuted, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
             btnCancelIngredient.Click += (s, e) => { pnlIngredientForm.Visible = false; ClearIngredientForm(); };
 
-           // btnDeleteIngredient = new Button { Text = "Delete", Location = new Point(255, 245), Size = new Size(100, 35), BackColor = DeepSeekDanger, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
+            // btnDeleteIngredient = new Button { Text = "Delete", Location = new Point(255, 245), Size = new Size(100, 35), BackColor = DeepSeekDanger, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
             // btnDeleteIngredient.Click += BtnDeleteIngredient_Click!;
 
             pnlIngredientForm.Controls.AddRange(new Control[] {
@@ -6906,17 +6910,8 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             var selectedIngredient = allIngredientsList?.FirstOrDefault(i => i.Name == ingredientName);
             if (selectedIngredient == null) return;
 
-            // ▼▼▼ THE FIX: Prevent the ComboBox from filtering while we force-set it ▼▼▼
-            cmbIngredient.TextChanged -= CmbIngredient_TextChanged;
-
-            // Force the text to match the clicked row exactly
-            cmbIngredient.Text = ingredientName;
-
-            // Re-select the item in the dropdown list
+            // ▼▼▼ FIX: Set SelectedItem directly instead of modifying Text ▼▼▼
             cmbIngredient.SelectedItem = selectedIngredient;
-
-            // Re-hook the event so the user can still search by typing
-            cmbIngredient.TextChanged += CmbIngredient_TextChanged;
             // ▲▲▲ END OF FIX ▲▲▲
 
             var pi = currentProductIngredients?.FirstOrDefault(p => p.IngredientId == selectedIngredient.Id);
