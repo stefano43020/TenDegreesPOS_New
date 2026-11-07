@@ -40,4 +40,12 @@
     </None>
   </ItemGroup>
 
+	
+	  <!-- Copy ProductImages folder to output directory on build -->
+  <ItemGroup>
+    <Content Include="ProductImages\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+	
 </Project>

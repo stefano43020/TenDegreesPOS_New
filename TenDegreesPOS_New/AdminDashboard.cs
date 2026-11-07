@@ -5647,7 +5647,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 editingVariantIndex = null;
                 txtVariantName.Text = "";
                 nudVariantQty.Value = 1;
-                nudVariantCost.Value = 0;
                 btnAddVariant.Text = "+ Add";
                 btnAddVariant.BackColor = DeepSeekInfo;
                 btnCancelVariantEdit.Visible = false;
@@ -5658,8 +5657,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             dgvPackagingVariants.Columns.Add("Name", "Pack Name");
             dgvPackagingVariants.Columns.Add("Qty", "Quantity");
             dgvPackagingVariants.Columns.Add("Unit", "Unit");
-            dgvPackagingVariants.Columns.Add("CostCol", "Cost (₱)");
-            dgvPackagingVariants.Columns["CostCol"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
 
             // ▼▼▼ DOUBLE CLICK TO EDIT ▼▼▼
             dgvPackagingVariants.CellDoubleClick += (s, ev) =>
@@ -5672,7 +5669,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                     txtVariantName.Text = variant.VariantName;
                     nudVariantQty.Value = variant.Quantity;
                     cmbVariantUnit.SelectedItem = variant.Unit;
-                    nudVariantCost.Value = variant.Cost;
 
                     btnAddVariant.Text = "💾 Save";
                     btnAddVariant.BackColor = DeepSeekSuccess;
@@ -5689,19 +5685,16 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 BorderStyle = BorderStyle.FixedSingle
             };
 
-            txtVariantName = new TextBox { Location = new Point(5, 7), Size = new Size(130, 25), PlaceholderText = "e.g. 500g Pack", BackColor = DeepSeekSurface, ForeColor = DeepSeekText, BorderStyle = BorderStyle.None };
-            nudVariantQty = new NumericUpDown { Location = new Point(140, 7), Size = new Size(60, 25), Minimum = 0.1m, Maximum = 100000, DecimalPlaces = 2, Value = 1, BackColor = DeepSeekSurface, ForeColor = DeepSeekText, BorderStyle = BorderStyle.None };
-            cmbVariantUnit = new ComboBox { Location = new Point(205, 7), Size = new Size(50, 25), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = DeepSeekSurface, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat };
+            txtVariantName = new TextBox { Location = new Point(5, 7), Size = new Size(180, 25), PlaceholderText = "e.g. 500g Pack", BackColor = DeepSeekSurface, ForeColor = DeepSeekText, BorderStyle = BorderStyle.None };
+            nudVariantQty = new NumericUpDown { Location = new Point(190, 7), Size = new Size(70, 25), Minimum = 0.1m, Maximum = 100000, DecimalPlaces = 2, Value = 1, BackColor = DeepSeekSurface, ForeColor = DeepSeekText, BorderStyle = BorderStyle.None };
+            cmbVariantUnit = new ComboBox { Location = new Point(265, 7), Size = new Size(60, 25), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = DeepSeekSurface, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat };
             cmbVariantUnit.Items.AddRange(new object[] { "g", "kg", "ml", "L", "pcs" });
             cmbVariantUnit.SelectedIndex = 0;
 
-            Label lblVariantCost = new Label { Text = "₱", Location = new Point(265, 9), AutoSize = true, ForeColor = DeepSeekTextMuted, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
-            nudVariantCost = new NumericUpDown { Location = new Point(280, 7), Size = new Size(70, 25), Minimum = 0, Maximum = 100000, DecimalPlaces = 2, Value = 0, BackColor = DeepSeekSurface, ForeColor = DeepSeekText, BorderStyle = BorderStyle.None };
-
-            btnAddVariant = new Button { Text = "+ Add", Location = new Point(360, 5), Size = new Size(80, 28), BackColor = DeepSeekInfo, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 } };
+            btnAddVariant = new Button { Text = "+ Add", Location = new Point(330, 5), Size = new Size(110, 28), BackColor = DeepSeekInfo, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 } };
             btnAddVariant.Click += BtnAddVariant_Click!;
 
-            pnlVariantInputs.Controls.AddRange(new Control[] { txtVariantName, nudVariantQty, cmbVariantUnit, lblVariantCost, nudVariantCost, btnAddVariant });
+            pnlVariantInputs.Controls.AddRange(new Control[] { txtVariantName, nudVariantQty, cmbVariantUnit, btnAddVariant });
 
             // Action Buttons
             btnSaveIngredient = new Button { Text = "Save Item", Location = new Point(15, 245), Size = new Size(120, 35), BackColor = DeepSeekSuccess, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
@@ -5778,7 +5771,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 variant.VariantName = txtVariantName.Text.Trim();
                 variant.Quantity = nudVariantQty?.Value ?? 1;
                 variant.Unit = cmbVariantUnit?.SelectedItem?.ToString() ?? "g";
-                variant.Cost = nudVariantCost?.Value ?? 0;
 
                 editingVariantIndex = null;
                 btnAddVariant.Text = "+ Add";
@@ -5792,8 +5784,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                     IngredientId = selectedIngredientId ?? 0,
                     VariantName = txtVariantName.Text.Trim(),
                     Quantity = nudVariantQty?.Value ?? 1,
-                    Unit = cmbVariantUnit?.SelectedItem?.ToString() ?? "g",
-                    Cost = nudVariantCost?.Value ?? 0
+                    Unit = cmbVariantUnit?.SelectedItem?.ToString() ?? "g"
                 };
                 currentVariants.Add(newVariant);
             }
@@ -5803,7 +5794,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             // Clear inputs
             txtVariantName.Text = "";
             nudVariantQty.Value = 1;
-            if (nudVariantCost != null) nudVariantCost.Value = 0;
         }
 
         private void RefreshVariantGrid()
@@ -5812,7 +5802,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             dgvPackagingVariants.Rows.Clear();
             foreach (var v in currentVariants)
             {
-                dgvPackagingVariants.Rows.Add(v.VariantName, v.Quantity, v.Unit, v.Cost.ToString("N2"));
+                dgvPackagingVariants.Rows.Add(v.VariantName, v.Quantity, v.Unit); 
             }
         }
 
