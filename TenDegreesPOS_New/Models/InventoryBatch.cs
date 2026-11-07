@@ -17,6 +17,8 @@ namespace TenDegreesPOS_New.Models
 
         public DateTime ExpirationDate { get; set; }
 
+        public decimal UnitCost { get; set; } = 0; // The price paid per pack for this batch
+
         public DateTime ReceivedDate { get; set; } = DateTime.Now;
 
         [ForeignKey("InventoryId")]

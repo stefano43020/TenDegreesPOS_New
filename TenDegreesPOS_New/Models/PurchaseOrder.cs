@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace TenDegreesPOS_New.Models
 {
@@ -17,6 +18,11 @@ namespace TenDegreesPOS_New.Models
         public DateTime OrderDate { get; set; } = DateTime.Now;
 
         public DateTime? ExpectedDeliveryDate { get; set; }
+
+        public int? PackagingVariantId { get; set; } // Track which variant was ordered
+
+        [ForeignKey("PackagingVariantId")]
+        public virtual PackagingVariant? PackagingVariant { get; set; }
 
         public decimal TotalAmount { get; set; }
 

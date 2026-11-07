@@ -14,13 +14,13 @@ namespace TenDegreesPOS_New.Services
         }
 
         public byte[] GenerateSalesReportPDF(
-            DateTime startDate,
-            DateTime endDate,
-            decimal totalSales,
-            int totalItemsSold,
-            int totalTransactions,
-            List<SalesProductPerformance> productPerformance,
-            List<SalesChartDataPoint> chartData)
+    DateTime startDate,
+    DateTime endDate,
+    decimal totalSales,
+    int totalItemsSold,
+    int totalTransactions,
+    List<SalesProductPerformance> productPerformance,
+    List<SalesChartDataPoint> chartData)
         {
             var document = Document.Create(container =>
             {

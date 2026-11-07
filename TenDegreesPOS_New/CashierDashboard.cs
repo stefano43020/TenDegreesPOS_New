@@ -42,6 +42,7 @@ namespace TenDegreesPOS_New
         private Panel? pnlInventory;
         private Panel? pnlSettings;
 
+        private System.Windows.Forms.Timer? queueTimer;
         private Label? lblQueueBadge;
 
         // Home/Order panel controls
@@ -131,11 +132,12 @@ namespace TenDegreesPOS_New
             _tcpServer.OnMessageReceived += HandleServerMessage;
 
             ShowHome();
+
             // Add a timer to refresh the badge every 10 seconds
-            System.Windows.Forms.Timer queueTimer = new System.Windows.Forms.Timer();
+            queueTimer = new System.Windows.Forms.Timer(); // <-- Removed the type declaration here
             queueTimer.Interval = 10000; // 10 seconds
             queueTimer.Tick += (s, e) => {
-                if (btnQueue != null)
+                if (btnQueue != null && !this.IsDisposed) // Added IsDisposed check
                 {
                     UpdateQueueBadge();
                 }
@@ -150,37 +152,48 @@ namespace TenDegreesPOS_New
 
         private void UpdateQueueBadge()
         {
-            if (lblQueueBadge == null) return;
+            if (lblQueueBadge == null || this.IsDisposed) return;
 
-            int queueCount = 0;
+            try
+            {
+                int queueCount = 0;
 
-            if (flpCashierQueue != null)
-            {
-                // Count only the ones still in the Waiting panel
-                queueCount = flpCashierQueue.Controls.Count;
-            }
-            else
-            {
-                // Fallback to DB if tab isn't open
-                queueCount = dbService.GetAllTransactions()
-                    .Count(t => t.TransactionDate.Date == DateTime.Today && t.Status == "Completed");
-            }
+                if (flpCashierQueue != null)
+                {
+                    // Count only the ones still in the Waiting panel
+                    queueCount = flpCashierQueue.Controls.Count;
+                }
+                else
+                {
+                    // Fallback to DB if tab isn't open
+                    queueCount = dbService.GetAllTransactions()
+                        .Count(t => t.TransactionDate.Date == DateTime.Today && t.Status == "Completed");
+                }
 
-            if (queueCount > 0)
-            {
-                lblQueueBadge.Text = queueCount.ToString();
-                lblQueueBadge.Visible = true;
+                if (queueCount > 0)
+                {
+                    lblQueueBadge.Text = queueCount.ToString();
+                    lblQueueBadge.Visible = true;
+                }
+                else
+                {
+                    lblQueueBadge.Visible = false;
+                }
             }
-            else
+            catch (ObjectDisposedException)
             {
-                lblQueueBadge.Visible = false;
+                // Silently ignore if the app is closing and the DB is already disposed
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error updating queue badge: {ex.Message}");
             }
         }
         private void SetupCashierControls()
         {
             btnHome = CreateSidebarButton("🏠 Home", 10, BtnHome_Click!);
 
-            // ▼▼▼ ONLY CREATE btnQueue ONCE ▼▼▼
+            // Setup Order Queue button
             btnQueue = CreateSidebarButton("📋 Order Queue", 60, BtnQueue_Click!);
 
             // Setup the badge
@@ -192,11 +205,10 @@ namespace TenDegreesPOS_New
                 BackColor = Color.FromArgb(239, 68, 68), // Red
                 Size = new Size(22, 22),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Location = new Point(160, 10), // Positioned on the right side of the button
-                Visible = false // Hidden by default
+                Location = new Point(160, 10),
+                Visible = false
             };
 
-            // Make it round
             lblQueueBadge.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -207,18 +219,16 @@ namespace TenDegreesPOS_New
                 }
             };
 
-            // ▼▼▼ THIS WAS MISSING: Add the badge to the button ▼▼▼
             btnQueue.Controls.Add(lblQueueBadge);
-            // ▲▲▲ END OF MISSING CODE ▲▲▲
 
             btnHistory = CreateSidebarButton("📋 History", 110, BtnHistory_Click!);
-            btnInventory = CreateSidebarButton("📦 Inventory", 160, BtnInventory_Click!);
-            btnSettings = CreateSidebarButton("⚙ Settings", 210, BtnSettings_Click!);
+
+            
 
             if (pnlSidebar != null)
             {
                 pnlSidebar.Controls.AddRange(new Control[] {
-                    btnHome, btnQueue, btnHistory, btnInventory, btnSettings
+                    btnHome, btnQueue, btnHistory
                 });
             }
         }
@@ -642,6 +652,14 @@ namespace TenDegreesPOS_New
                 foreach (var pi in fullProduct.ProductIngredients)
                 {
                     if (pi.IngredientId <= 0) continue;
+
+                    // ▼▼▼ ADD THIS CHECK ▼▼▼
+                    if (!string.IsNullOrEmpty(pi.RequiredSize) &&
+                        pi.RequiredSize != selectedSize)
+                    {
+                        continue;
+                    }
+                    // ▲▲▲ END OF CHECK ▲▲▲
 
                     decimal perUnit = GetRequiredQtyPerUnit(pi, product.HasSizes, selectedSize);
                     if (perUnit <= 0) return 0;
@@ -1255,7 +1273,7 @@ namespace TenDegreesPOS_New
             Button btnPayCash = new Button
             {
                 Text = "Pay Cash",
-                Location = new Point(180, 685),
+                Location = new Point(180, 715),
                 Size = new Size(140, 45),
                 BackColor = DeepSeekSuccess,
                 ForeColor = DeepSeekText,
@@ -1268,7 +1286,7 @@ namespace TenDegreesPOS_New
             Button btnPayGCash = new Button
             {
                 Text = "GCash",
-                Location = new Point(335, 685),
+                Location = new Point(335, 715),
                 Size = new Size(105, 45),
                 BackColor = DeepSeekAccent,
                 ForeColor = DeepSeekText,
@@ -1281,7 +1299,7 @@ namespace TenDegreesPOS_New
             Button btnPayHybrid = new Button
             {
                 Text = "Hybrid",
-                Location = new Point(450, 685),
+                Location = new Point(450, 715),
                 Size = new Size(145, 45),
                 BackColor = Color.FromArgb(139, 92, 246),
                 ForeColor = DeepSeekText,
@@ -1349,8 +1367,8 @@ namespace TenDegreesPOS_New
 
             Label lblDiscountPercentLabel = new Label
             {
-                Text = "Discount (%):",
-                Location = new Point(130, 14),
+                Text = "Discount %:",
+                Location = new Point(135, 14),
                 AutoSize = true,
                 ForeColor = DeepSeekText,
                 Font = new Font("Segoe UI", 10)
@@ -1416,7 +1434,7 @@ namespace TenDegreesPOS_New
                 pnlTotals,
                 pnlDiscount,               // Added
                 btnPrintBill, btnPayCash, btnPayGCash, btnPayHybrid,
-                lblNotes, txtOrderNotes   
+                lblNotes, txtOrderNotes
             });
 
             splitContainer.Panel1.Controls.Add(pnlLeft);
@@ -1627,10 +1645,24 @@ namespace TenDegreesPOS_New
                 // ============================================================
                 if (product.Category?.Name == "Extras/Add-ons")
                 {
+                    // ▼▼▼ NEW: CALCULATE AVAILABLE STOCK ▼▼▼
+                    // We check how many we can make, then subtract what is already in the cart
+                    int maxMakeable = GetMaxOrderableQuantity(product, null);
+
+                    int currentlyInCart = cartItems
+                        .SelectMany(ci => ci.AddOns)
+                        .Where(a => a.ProductId == product.Id)
+                        .Sum(a => a.Quantity);
+
+                    int availableStock = Math.Max(0, maxMakeable - currentlyInCart);
+
+                    bool hasAddOnStock = availableStock > 0;
+                    // ▲▲▲ END OF STOCK CALCULATION ▲▲▲
+
                     Panel extraCard = new Panel
                     {
-                        Size = new Size(210, 140),
-                        BackColor = DeepSeekCard,
+                        Size = new Size(210, 160), // Made slightly taller to fit the stock label
+                        BackColor = hasAddOnStock ? DeepSeekCard : Color.FromArgb(40, 30, 30),
                         Margin = new Padding(10),
                         Tag = product
                     };
@@ -1638,18 +1670,17 @@ namespace TenDegreesPOS_New
                     {
                         using (Pen pen = new Pen(DeepSeekBorder, 1))
                             e.Graphics.DrawRectangle(pen, 0, 0, extraCard.Width - 1, extraCard.Height - 1);
-                        using (Pen accentPen = new Pen(DeepSeekWarning, 2))
+                        using (Pen accentPen = new Pen(hasAddOnStock ? DeepSeekWarning : DeepSeekDanger, 2))
                             e.Graphics.DrawLine(accentPen, 0, 0, extraCard.Width, 0);
                     };
 
-                    // ▼▼▼ RENAMED from lblName to lblExtraName ▼▼▼
                     Label lblExtraName = new Label
                     {
                         Text = product.Name,
                         Font = new Font("Segoe UI", 11, FontStyle.Bold),
                         ForeColor = DeepSeekText,
                         Location = new Point(10, 15),
-                        Size = new Size(190, 40),
+                        Size = new Size(190, 25),
                         AutoEllipsis = true
                     };
 
@@ -1658,30 +1689,42 @@ namespace TenDegreesPOS_New
                         Text = $"₱{product.Price:N2}",
                         Font = new Font("Segoe UI", 14, FontStyle.Bold),
                         ForeColor = DeepSeekSuccess,
-                        Location = new Point(10, 55),
+                        Location = new Point(10, 45),
                         AutoSize = true
                     };
 
+                    // ▼▼▼ NEW: STOCK LABEL ▼▼▼
+                    Label lblExtraStock = new Label
+                    {
+                        Text = $"Available: {availableStock}",
+                        Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                        ForeColor = hasAddOnStock ? DeepSeekSuccess : DeepSeekDanger,
+                        Location = new Point(10, 75),
+                        AutoSize = true
+                    };
+                    // ▲▲▲ END OF STOCK LABEL ▲▲▲
+
                     Label lblHint = new Label
                     {
-                        Text = "Click an item in cart first, then add.",
+                        Text = hasAddOnStock ? "Click an item in cart first." : "Out of Stock",
                         Font = new Font("Segoe UI", 8, FontStyle.Italic),
-                        ForeColor = DeepSeekTextMuted,
-                        Location = new Point(10, 80),
+                        ForeColor = hasAddOnStock ? DeepSeekTextMuted : DeepSeekDanger,
+                        Location = new Point(10, 95),
                         Size = new Size(190, 20)
                     };
 
                     Button btnAddExtra = new Button
                     {
-                        Text = "+ Add to Selected",
+                        Text = hasAddOnStock ? "+ Add to Selected" : "Out of Stock",
                         Size = new Size(190, 30),
-                        Location = new Point(10, 105),
-                        BackColor = DeepSeekWarning,
+                        Location = new Point(10, 120), // Moved down
+                        BackColor = hasAddOnStock ? DeepSeekWarning : DeepSeekTextMuted,
                         ForeColor = Color.Black,
                         FlatStyle = FlatStyle.Flat,
                         Font = new Font("Segoe UI", 9, FontStyle.Bold),
                         FlatAppearance = { BorderSize = 0 },
-                        Cursor = Cursors.Hand
+                        Cursor = hasAddOnStock ? Cursors.Hand : Cursors.Default,
+                        Enabled = hasAddOnStock
                     };
 
                     btnAddExtra.Click += (s, ev) =>
@@ -1696,31 +1739,72 @@ namespace TenDegreesPOS_New
                         if (index >= 0 && index < cartItems.Count)
                         {
                             var cartItem = cartItems[index];
+                            var parentProduct = dbService.GetProductById(cartItem.ProductId);
 
+                            if (parentProduct == null) return;
+
+                            // 1. Count current add-ons across cart
+                            int currentAddOnQty = cartItems
+                                .SelectMany(ci => ci.AddOns)
+                                .Where(a => a.ProductId == product.Id)
+                                .Sum(a => a.Quantity);
+
+                            // 2. Check add-on's own stock
+                            if (!CheckProductAvailability(product, currentAddOnQty + 1, null, out string? addOnMessage))
+                            {
+                                MessageBox.Show($"Cannot add more {product.Name}.\n\n{addOnMessage}", "Insufficient Add-on Stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
+                            }
+
+                            // 3. Temporarily add to simulate
                             var existingExtra = cartItem.AddOns.FirstOrDefault(a => a.ProductId == product.Id);
+                            bool wasNew = false;
+
                             if (existingExtra != null)
                             {
                                 existingExtra.Quantity++;
                             }
                             else
                             {
-                                cartItem.AddOns.Add(new CartItem
+                                existingExtra = new CartItem
                                 {
                                     ProductId = product.Id,
                                     Name = product.Name,
                                     Quantity = 1,
                                     Price = product.Price
-                                });
+                                };
+                                cartItem.AddOns.Add(existingExtra);
+                                wasNew = true;
+                            }
+
+                            // 4. Check parent product
+                            bool canAdd = CheckProductAvailability(parentProduct, cartItem.Quantity, cartItem.Size, out string? message);
+
+                            if (!canAdd)
+                            {
+                                if (wasNew)
+                                {
+                                    cartItem.AddOns.Remove(existingExtra);
+                                }
+                                else
+                                {
+                                    existingExtra.Quantity--;
+                                }
+
+                                MessageBox.Show($"Cannot add {product.Name}.\n\n{message}", "Insufficient Stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
                             }
 
                             RefreshCart();
+
+                            // Re-draw the cards so the available stock number updates instantly
+                            LoadProductCards();
                         }
                     };
 
-                    // Use the renamed variables here
-                    extraCard.Controls.AddRange(new Control[] { lblExtraName, lblExtraPrice, lblHint, btnAddExtra });
+                    extraCard.Controls.AddRange(new Control[] { lblExtraName, lblExtraPrice, lblExtraStock, lblHint, btnAddExtra });
                     flpProducts.Controls.Add(extraCard);
-                    continue; // Skip the normal card layout for extras
+                    continue;
                 }
 
                 // ============================================================
@@ -2295,26 +2379,35 @@ namespace TenDegreesPOS_New
         {
             if (e.RowIndex < 0) return;
 
-            // Only respond to the +/- button columns
             string columnName = dgvCart.Columns[e.ColumnIndex].Name;
             if (columnName != "PlusBtn" && columnName != "MinusBtn") return;
 
             var row = dgvCart.Rows[e.RowIndex];
             if (row.Tag == null) return;
 
-            // What kind of row is this?
             string rowType = row.Cells["Name"].Tag as string ?? "";
             bool isAddOn = rowType == "ADDON";
             bool isMainItem = rowType == "MAIN";
 
-            // ============ ADD-ON CLICK ============
             if (isAddOn)
             {
-                // Tag is a tuple (addon, parent)
                 var tag = ((CartItem addon, CartItem parent))row.Tag;
 
                 if (columnName == "PlusBtn")
                 {
+                    // ▼▼▼ CHECK STOCK BEFORE ADDING ▼▼▼
+                    int currentAddOnQty = cartItems
+                        .SelectMany(ci => ci.AddOns)
+                        .Where(a => a.ProductId == tag.addon.ProductId)
+                        .Sum(a => a.Quantity);
+
+                    if (!CheckProductAvailability(dbService.GetProductById(tag.addon.ProductId), currentAddOnQty + 1, null, out string? msg))
+                    {
+                        MessageBox.Show($"Cannot add more {tag.addon.Name}.\n\n{msg}", "Insufficient Stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    // ▲▲▲ END OF FIX ▲▲▲
+
                     tag.addon.Quantity++;
                 }
                 else if (columnName == "MinusBtn")
@@ -2326,7 +2419,6 @@ namespace TenDegreesPOS_New
                     }
                 }
             }
-            // ============ MAIN ITEM CLICK ============
             else if (isMainItem)
             {
                 var item = row.Tag as CartItem;
@@ -2337,7 +2429,6 @@ namespace TenDegreesPOS_New
 
                 if (columnName == "PlusBtn")
                 {
-                    // Check stock before adding
                     int oldQty = item.Quantity;
                     item.Quantity = 0;
                     bool ok = CheckProductAvailability(product, oldQty + 1, item.Size, out string? msg);
@@ -2369,7 +2460,10 @@ namespace TenDegreesPOS_New
             // Re-render cart
             RefreshCart();
 
-            // Try to restore selection to a nearby row
+            // ▼▼▼ FIX: Refresh the product cards to update the "Available: X" labels ▼▼▼
+            LoadProductCards();
+            // ▲▲▲ END OF FIX ▲▲▲
+
             if (e.RowIndex < dgvCart.Rows.Count)
             {
                 dgvCart.ClearSelection();
@@ -2631,6 +2725,15 @@ namespace TenDegreesPOS_New
                                     "Invalid Reference", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                                 return;
                             }
+
+                            // ▼▼▼ ADD THIS CHECK ▼▼▼
+                            if (dbService.IsGcashReferenceDuplicate(refNum))
+                            {
+                                MessageBox.Show("This GCash reference number has already been used in a previous transaction.",
+                                    "Duplicate Reference", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
+                            }
+                            // ▲▲▲ END OF CHECK ▲▲▲
                         }
 
                         var transaction = new Transaction
@@ -2706,7 +2809,7 @@ namespace TenDegreesPOS_New
                         paymentDialog.DialogResult = DialogResult.OK;
 
                         // Show the preview form instead of asking directly
-                        using (var preview = new ReceiptPreviewForm(savedTransaction, userName, GeneratePDFReceipt))
+                        using (var preview = new ReceiptPreviewForm(savedTransaction, userName, (tx) => GeneratePDFReceipt(tx, userName)))
                         {
                             preview.ShowDialog();
                         }
@@ -3043,6 +3146,15 @@ namespace TenDegreesPOS_New
                                     "Invalid Reference", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                                 return;
                             }
+
+                            // ▼▼▼ ADD THIS CHECK ▼▼▼
+                            if (dbService.IsGcashReferenceDuplicate(refNum))
+                            {
+                                MessageBox.Show("This GCash reference number has already been used in a previous transaction.",
+                                    "Duplicate Reference", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
+                            }
+                            // ▲▲▲ END OF CHECK ▲▲▲
                         }
 
                         var transaction = new Transaction
@@ -3092,7 +3204,7 @@ namespace TenDegreesPOS_New
                         dlg.DialogResult = DialogResult.OK;
 
                         // Show the preview form instead of asking directly
-                        using (var preview = new ReceiptPreviewForm(savedTransaction, userName, GeneratePDFReceipt))
+                        using (var preview = new ReceiptPreviewForm(savedTransaction, userName, (tx) => GeneratePDFReceipt(tx, userName)))
                         {
                             preview.ShowDialog();
                         }
@@ -3122,7 +3234,7 @@ namespace TenDegreesPOS_New
         //  PDF RECEIPT
         // ============================================================
 
-        private void GeneratePDFReceipt(Transaction transaction)
+        private void GeneratePDFReceipt(Transaction transaction, string cashierName)
         {
             try
             {
@@ -3209,7 +3321,7 @@ namespace TenDegreesPOS_New
                     double rightCol = page.Width - 15;
 
                     // 1. Order Number
-                    string orderNo = $"#{transaction.TransactionNumber.Split('-').Last()}";
+                    string orderNo = $"#{transaction.TransactionNumber.Substring(transaction.TransactionNumber.Length - 4)}";
                     double orderWidth = gfx.MeasureString(orderNo, fontOrderNo).Width;
                     gfx.DrawString(orderNo, fontOrderNo, brushBlack, new XPoint(centerX - orderWidth / 2, yPos));
                     yPos += 25;
@@ -3283,7 +3395,7 @@ namespace TenDegreesPOS_New
 
                     // 7. Transaction Details
                     gfx.DrawString($"Order: {transaction.TransactionNumber.Split('-').Last()}", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 12;
-                    gfx.DrawString($"Employee: Owner", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 12;
+                    gfx.DrawString($"Employee: {cashierName}", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 12;
                     gfx.DrawString($"POS: Ten Degrees POS", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 20;
 
                     gfx.DrawLine(penDotted, leftMargin, yPos, rightCol, yPos);
@@ -3459,7 +3571,7 @@ namespace TenDegreesPOS_New
                 // ▲▲▲ END OF FIX ▲▲▲
             };
 
-            GeneratePDFReceipt(tempTransaction);
+            GeneratePDFReceipt(tempTransaction, userName);
         }
 
         private void TxtSearch_TextChanged(object sender, EventArgs e) => LoadProductCards();
@@ -3983,40 +4095,7 @@ namespace TenDegreesPOS_New
 
         private void TxtSearchInventory_TextChanged(object sender, EventArgs e) => LoadInventory();
 
-        // ============================================================
-        //  SETTINGS
-        // ============================================================
-
-        private void ShowSettings()
-        {
-            if (pnlContent == null) return;
-            pnlContent.Controls.Clear();
-
-            Label lblTitle = new Label
-            {
-                Text = "Settings",
-                Font = new Font("Segoe UI", 24, FontStyle.Bold),
-                ForeColor = DeepSeekText,
-                Location = new Point(30, 20),
-                AutoSize = true,
-                BackColor = Color.Transparent
-            };
-
-            btnLogout = new Button
-            {
-                Text = "Logout",
-                Location = new Point(30, 100),
-                Size = new Size(200, 50),
-                BackColor = DeepSeekDanger,
-                ForeColor = DeepSeekText,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 12, FontStyle.Bold),
-                FlatAppearance = { BorderSize = 0 }
-            };
-            btnLogout.Click += (s, e) => BtnLogout_Click(s, e);
-
-            pnlContent.Controls.AddRange(new Control[] { lblTitle, btnLogout });
-        }
+        
 
         // ============================================================
         //  NAVIGATION
@@ -4025,7 +4104,6 @@ namespace TenDegreesPOS_New
         private void BtnHome_Click(object sender, EventArgs e) => ShowHome();
         private void BtnHistory_Click(object sender, EventArgs e) => ShowHistory();
         private void BtnInventory_Click(object sender, EventArgs e) => ShowInventory();
-        private void BtnSettings_Click(object sender, EventArgs e) => ShowSettings();
 
         // ============================================================
         //  CART ITEM CLASS
@@ -4044,6 +4122,19 @@ namespace TenDegreesPOS_New
             // ▲▲▲ END OF NEW ▲▲▲
 
             public decimal TotalPrice => (Price * Quantity) + (AddOns.Sum(a => a.Price * a.Quantity));
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // ▼▼▼ STOP THE TIMER FIRST ▼▼▼
+            if (queueTimer != null)
+            {
+                queueTimer.Stop();
+                queueTimer.Dispose();
+            }
+            // ▲▲▲ END OF FIX ▲▲▲
+
+            base.OnFormClosing(e);
         }
     }
 }

@@ -92,6 +92,16 @@ namespace TenDegreesPOS_New.Services
             TryAddColumn("Products", "PriceLarge", "DECIMAL");
             TryAddColumn("Products", "ImagePath", "TEXT");
 
+            TryAddColumn("ProductIngredients", "RequiredSize", "TEXT");
+
+            // ---- PurchaseOrderItems ----
+            TryAddColumn("PurchaseOrderItems", "PackagingVariantId", "INTEGER");
+            TryAddColumn("PurchaseOrders", "PackagingVariantId", "INTEGER");
+            TryAddColumn("PurchaseOrderItems", "ActualUnitCost", "DECIMAL DEFAULT 0"); 
+
+            // ---- InventoryBatches ----
+            TryAddColumn("InventoryBatches", "UnitCost", "DECIMAL DEFAULT 0");
+
             TryAddColumn("Transactions", "Notes", "TEXT");
             // ---- Inventory Tracking ----
             TryAddColumn("Inventory", "ExpirationDate", "TEXT");
@@ -646,7 +656,7 @@ namespace TenDegreesPOS_New.Services
             catch (Exception ex) { throw new Exception($"Error generating purchase order number: {ex.Message}", ex); }
         }
 
-        public PurchaseOrder CreatePurchaseOrder(PurchaseOrder order, List<(int ingredientId, string ingredientName, decimal boxes, decimal quantity, string unit, string boxDisplayName, decimal boxQuantityPerUnit, decimal unitPrice)> items)
+        public PurchaseOrder CreatePurchaseOrder(PurchaseOrder order, List<(int ingredientId, string ingredientName, decimal boxes, decimal quantity, string unit, string boxDisplayName, decimal boxQuantityPerUnit, decimal unitPrice, int? packagingVariantId)> items)
         {
             using var dbTransaction = _context.Database.BeginTransaction();
             try
@@ -660,40 +670,21 @@ namespace TenDegreesPOS_New.Services
 
                 foreach (var item in items)
                 {
-                    var ingredient = _context.Ingredients.Find(item.ingredientId);
-                    string ingredientUnit = ingredient?.Unit ?? "g";
-                    decimal boxQuantity = item.boxQuantityPerUnit;
-                    string boxUnit = item.unit;
-
-                    // Calculate how many base units (e.g., grams) are in ONE pack
-                    decimal quantityPerBoxInBaseUnit = boxQuantity;
-                    if (boxUnit.ToLower() != ingredientUnit.ToLower())
-                    {
-                        try
-                        {
-                            quantityPerBoxInBaseUnit = UnitConverter.ConvertToBase(boxQuantity, boxUnit, ingredientUnit);
-                        }
-                        catch
-                        {
-                            if (boxUnit.ToLower() == "kg" && ingredientUnit.ToLower() == "g") quantityPerBoxInBaseUnit = boxQuantity * 1000m;
-                            if (boxUnit.ToLower() == "l" && ingredientUnit.ToLower() == "ml") quantityPerBoxInBaseUnit = boxQuantity * 1000m;
-                        }
-                    }
-
-                    // NOTE: item.boxes now represents the NUMBER OF PACKS (e.g., 2 packs)
-                    // We create a separate PO item for each pack type so they show up individually
+                    // The BaseQuantity from the UI is already converted (e.g., 1 pack of 1kg = 1000g)
+                    // So we just save exactly what the UI sent us.
                     var orderItem = new PurchaseOrderItem
                     {
                         IngredientId = item.ingredientId,
                         IngredientName = item.ingredientName,
-                        BoxesOrdered = item.boxes,           // e.g., 2
+                        BoxesOrdered = item.boxes,
                         BoxesReceived = 0,
-                        QuantityOrdered = item.boxes * quantityPerBoxInBaseUnit, // e.g., 2 * 500 = 1000g
+                        QuantityOrdered = item.quantity, // Save the correct base quantity (e.g., 1000)
                         QuantityReceived = 0,
-                        BoxQuantityPerUnit = boxQuantity,    // e.g., 500
-                        BoxUnit = boxUnit,                   // e.g., "g"
+                        BoxQuantityPerUnit = item.boxQuantityPerUnit, // Save the variant qty (e.g., 1)
+                        BoxUnit = item.unit, // Save the variant unit (e.g., "kg")
                         UnitPrice = item.unitPrice,
-                        TotalPrice = item.boxes * item.unitPrice
+                        TotalPrice = item.boxes * item.unitPrice,
+                        PackagingVariantId = item.packagingVariantId
                     };
 
                     totalAmount += orderItem.TotalPrice;
@@ -718,7 +709,11 @@ namespace TenDegreesPOS_New.Services
             catch (Exception ex)
             {
                 dbTransaction.Rollback();
-                throw new Exception($"Error creating purchase order: {ex.Message}", ex);
+
+                string errorMsg = ex.Message;
+                if (ex.InnerException != null) errorMsg += " | " + ex.InnerException.Message;
+
+                throw new Exception($"Error creating purchase order: {errorMsg}", ex);
             }
         }
 
@@ -730,7 +725,7 @@ namespace TenDegreesPOS_New.Services
                 .OrderBy(ib => ib.ExpirationDate)
                 .ToList();
         }
-        public void ReceivePurchaseOrderWithBatches(int orderId, Dictionary<int, (decimal Qty, DateTime ExpDate)> receivedData)
+        public void ReceivePurchaseOrderWithBatches(int orderId, Dictionary<int, (decimal Qty, DateTime ExpDate, decimal UnitCost)> receivedData)
         {
             using var dbTransaction = _context.Database.BeginTransaction();
             try
@@ -752,28 +747,31 @@ namespace TenDegreesPOS_New.Services
                         var data = receivedData[item.Id];
                         decimal boxesToReceive = data.Qty;
                         DateTime expirationDate = data.ExpDate;
+                        decimal actualUnitCost = data.UnitCost;
 
                         decimal newReceivedBoxes = item.BoxesReceived + boxesToReceive;
                         if (newReceivedBoxes > item.BoxesOrdered + 0.01m)
                             throw new Exception($"Cannot receive more than ordered for {item.IngredientName}");
 
                         item.BoxesReceived = newReceivedBoxes;
+                        item.ActualUnitCost = actualUnitCost;
 
-                        // Unit conversion logic
-                        decimal boxQuantity = item.BoxQuantityPerUnit ?? 1;
-                        string boxUnit = item.BoxUnit ?? "kg";
-                        string ingredientUnit = item.Ingredient?.Unit ?? "g";
-                        decimal quantityPerBoxInIngredientUnit = boxQuantity;
+                        // Calculate exactly how many base units (e.g., grams) are in one box based on the variant
+                        decimal quantityPerPack = 1;
+                        var variant = _context.PackagingVariants.Find(item.PackagingVariantId);
 
-                        if (boxUnit.ToLower() != ingredientUnit.ToLower())
+                        if (variant != null)
                         {
-                            if (boxUnit.ToLower() == "l" && ingredientUnit.ToLower() == "ml") quantityPerBoxInIngredientUnit = boxQuantity * 1000m;
-                            else if (boxUnit.ToLower() == "ml" && ingredientUnit.ToLower() == "l") quantityPerBoxInIngredientUnit = boxQuantity / 1000m;
-                            else if (boxUnit.ToLower() == "kg" && ingredientUnit.ToLower() == "g") quantityPerBoxInIngredientUnit = boxQuantity * 1000m;
-                            else if (boxUnit.ToLower() == "g" && ingredientUnit.ToLower() == "kg") quantityPerBoxInIngredientUnit = boxQuantity / 1000m;
+                            // Convert the variant (e.g., 1 kg) to the base unit (e.g., g)
+                            quantityPerPack = Services.UnitConverter.ConvertToBase(variant.Quantity, variant.Unit, item.Ingredient?.Unit ?? "g");
+                        }
+                        else
+                        {
+                            // Fallback if the variant was deleted
+                            quantityPerPack = item.BoxesOrdered > 0 ? (item.QuantityOrdered / item.BoxesOrdered) : (item.BoxQuantityPerUnit ?? 1);
                         }
 
-                        decimal quantityReceived = boxesToReceive * quantityPerBoxInIngredientUnit;
+                        decimal quantityReceived = boxesToReceive * quantityPerPack;
                         item.QuantityReceived += quantityReceived;
 
                         // Get or create the parent Inventory record
@@ -784,42 +782,36 @@ namespace TenDegreesPOS_New.Services
                             {
                                 IngredientId = item.IngredientId,
                                 Quantity = 0,
-                                Unit = ingredientUnit,
+                                Unit = item.Ingredient?.Unit ?? "g",
                                 LastUpdated = DateTime.Now
                             };
                             _context.Inventory.Add(inventory);
                             _context.SaveChanges(); // Need the ID for the batch
                         }
 
-                        // ▼▼▼ CREATE THE BATCH FIRST ▼▼▼
+                        // CREATE THE BATCH
                         var batch = new InventoryBatch
                         {
                             InventoryId = inventory.Id,
                             Quantity = quantityReceived,
                             ExpirationDate = expirationDate,
                             ReceivedDate = DateTime.Now,
-                            IsDeductedFromStock = false
+                            UnitCost = actualUnitCost
                         };
                         _context.InventoryBatches.Add(batch);
-                        // ▲▲▲ END OF BATCH CREATION ▲▲▲
 
-                        // ▼▼▼ NOW DECIDE IF IT GOES TO SELLABLE STOCK ▼▼▼
+                        // DECIDE IF IT GOES TO SELLABLE STOCK
                         if (expirationDate.Date > DateTime.Today)
                         {
-                            // Not expired yet - add to sellable stock
                             inventory.Quantity += quantityReceived;
                         }
                         else
                         {
-                            // Already expired (or expires today) upon arrival
-                            // Log it to the batch but don't add to sellable inventory.
-                            // Mark it as already deducted so the expiry sweep doesn't subtract it again.
                             batch.IsDeductedFromStock = true;
                             System.Diagnostics.Debug.WriteLine($"Received expired item: {item.IngredientName}. Quantity not added to sellable stock.");
                         }
 
                         inventory.LastUpdated = DateTime.Now;
-                        // ▲▲▲ END OF SELLABLE STOCK LOGIC ▲▲▲
 
                         if (item.BoxesReceived < item.BoxesOrdered - 0.01m)
                             allFullyReceived = false;
@@ -951,6 +943,16 @@ namespace TenDegreesPOS_New.Services
             {
                 throw new Exception($"Error updating transaction status: {ex.Message}", ex);
             }
+        }
+
+        public bool IsGcashReferenceDuplicate(string referenceNumber)
+        {
+            if (string.IsNullOrWhiteSpace(referenceNumber)) return false;
+            try
+            {
+                return _context.Transactions.Any(t => t.GcashReferenceNumber == referenceNumber);
+            }
+            catch { return false; }
         }
 
         public void UpdatePurchaseOrderStatus(int orderId, string status)
@@ -1112,6 +1114,14 @@ namespace TenDegreesPOS_New.Services
                 if (string.IsNullOrWhiteSpace(product.Name)) throw new ArgumentException("Product name is required");
                 if (product.Price <= 0) throw new ArgumentException("Product price must be greater than 0");
 
+                // ▼▼▼ ADD THIS CHECK ▼▼▼
+                bool exists = _context.Products.Any(p => p.Name.ToLower() == product.Name.ToLower().Trim());
+                if (exists)
+                {
+                    throw new Exception($"A product with the name '{product.Name}' already exists.");
+                }
+                // ▲▲▲ END OF CHECK ▲▲▲
+
                 if (product.CategoryId <= 0)
                 {
                     var defaultCategory = _context.Categories.FirstOrDefault();
@@ -1124,6 +1134,7 @@ namespace TenDegreesPOS_New.Services
                     if (!categoryExists) throw new Exception($"Category with ID {product.CategoryId} does not exist");
                 }
 
+                product.Name = product.Name.Trim(); // Ensure trimmed before saving
                 product.CreatedAt = DateTime.Now;
                 product.IsActive = true;
 
@@ -1231,7 +1242,11 @@ namespace TenDegreesPOS_New.Services
                     {
                         ProductId = productId,
                         IngredientId = ingredient.IngredientId,
-                        Quantity = ingredient.Quantity
+                        Quantity = ingredient.Quantity,
+                        QuantitySmall = ingredient.QuantitySmall,     // <-- RESTORED
+                        QuantityMedium = ingredient.QuantityMedium,   // <-- RESTORED
+                        QuantityLarge = ingredient.QuantityLarge,     // <-- RESTORED
+                        RequiredSize = ingredient.RequiredSize
                     };
                     _context.ProductIngredients.Add(newIngredient);
                     savedCount++;
@@ -1412,6 +1427,12 @@ namespace TenDegreesPOS_New.Services
                     {
                         if (pi.Ingredient != null)
                         {
+                            // Skip deducting the wrong cup size (if this ingredient is size-specific)
+                            if (!string.IsNullOrEmpty(pi.RequiredSize) && pi.RequiredSize != item.size)
+                            {
+                                continue;
+                            }
+
                             decimal quantityPerUnit = pi.Quantity;
                             if (product.HasSizes && !string.IsNullOrEmpty(item.size))
                             {
@@ -1430,6 +1451,13 @@ namespace TenDegreesPOS_New.Services
 
                             if (ingredientInventory != null)
                             {
+                                // ▼▼▼ PREVENT NEGATIVE STOCK ▼▼▼
+                                if (ingredientInventory.Quantity - totalQuantity < 0)
+                                {
+                                    throw new Exception($"Insufficient stock for '{pi.Ingredient.Name}'. Current stock: {ingredientInventory.Quantity}, Required: {totalQuantity}");
+                                }
+                                // ▲▲▲ END OF CHECK ▲▲▲
+
                                 ingredientInventory.Quantity -= totalQuantity;
                                 ingredientInventory.LastUpdated = DateTime.Now;
                             }
@@ -1547,6 +1575,14 @@ namespace TenDegreesPOS_New.Services
             try
             {
                 if (string.IsNullOrWhiteSpace(ingredient.Name)) throw new ArgumentException("Ingredient name is required");
+
+                // ▼▼▼ ADD THIS CHECK ▼▼▼
+                bool exists = _context.Ingredients.Any(i => i.Name.ToLower() == ingredient.Name.ToLower().Trim());
+                if (exists)
+                {
+                    throw new Exception($"An ingredient with the name '{ingredient.Name}' already exists.");
+                }
+                // ▲▲▲ END OF CHECK ▲▲▲
 
                 ingredient.IsActive = true;
                 _context.Ingredients.Add(ingredient);
@@ -1769,6 +1805,13 @@ namespace TenDegreesPOS_New.Services
                 var inventory = _context.Inventory.Find(id);
                 if (inventory != null)
                 {
+                    // ▼▼▼ DATABASE SAFEGUARD ▼▼▼
+                    if (inventory.Quantity + adjustment < 0)
+                    {
+                        throw new Exception($"Adjustment would result in negative stock. Current: {inventory.Quantity}, Adjustment: {adjustment}");
+                    }
+                    // ▲▲▲ END OF SAFEGUARD ▲▲▲
+
                     inventory.Quantity += adjustment;
                     inventory.LastUpdated = DateTime.Now;
                     _context.SaveChanges();

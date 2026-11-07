@@ -20,6 +20,10 @@ namespace TenDegreesPOS_New.Models
         public decimal? QuantityMedium { get; set; }
         public decimal? QuantityLarge { get; set; }
 
+        // ▼▼▼ NEW: Track which size this ingredient is for ▼▼▼
+        public string? RequiredSize { get; set; } // "Small", "Medium", "Large", or null
+        // ▲▲▲ END OF NEW ▲▲▲
+
         [ForeignKey("ProductId")]
         public virtual Product? Product { get; set; }
 

@@ -398,7 +398,7 @@ namespace TenDegreesPOS_New
                 if (!allTransactions.Any()) return null;
 
                 var productSales = new Dictionary<int, (string Name, int Quantity, decimal Revenue)>();
-
+                
                 foreach (var transaction in allTransactions)
                 {
                     if (transaction.TransactionItems != null)
@@ -699,8 +699,6 @@ namespace TenDegreesPOS_New
             // Create Tabs
             TabPage tpNearlyExpired = new TabPage("  ⚠ Nearly Expired  ") { BackColor = DeepSeekBg };
             TabPage tpExpired = new TabPage("  ❌ For Disposal  ") { BackColor = DeepSeekBg };
-            TabPage tpStockLevels = new TabPage("  📦 Stock Levels  ") { BackColor = DeepSeekBg };
-            TabPage tpDamaged = new TabPage("  🛠 Damaged Items  ") { BackColor = DeepSeekBg };
             TabPage tpDisposal = new TabPage("  🗑 Disposal Records  ") { BackColor = DeepSeekBg };
 
             // Setup the disposal grid
@@ -732,11 +730,9 @@ namespace TenDegreesPOS_New
             // Build contents for each tab (This MUST happen before adding to the TabControl)
             SetupMonitoringGrid(tpNearlyExpired, "NearlyExpired");
             SetupMonitoringGrid(tpExpired, "Expired");
-            SetupMonitoringGrid(tpStockLevels, "StockLevels");
-            SetupMonitoringGrid(tpDamaged, "Damaged");
 
             // Add to TabControl ONCE
-            tcMonitoring.TabPages.AddRange(new TabPage[] { tpNearlyExpired, tpExpired, tpStockLevels, tpDamaged, tpDisposal });
+            tcMonitoring.TabPages.AddRange(new TabPage[] { tpNearlyExpired, tpExpired, tpDisposal });
 
             StyleTabControl(tcMonitoring);
 
@@ -1268,7 +1264,101 @@ namespace TenDegreesPOS_New
                     suppliersForIngredient.Add(s);
             }
 
-            bool hasSupplier = suppliersForIngredient.Count > 0;
+            // ▼▼▼ NEW LOGIC: If no supplier, immediately ask to assign one ▼▼▼
+            if (suppliersForIngredient.Count == 0)
+            {
+                DialogResult result = MessageBox.Show(
+                    $"'{ingredient.Name}' has no supplier assigned.\n\nWould you like to assign a supplier now?",
+                    "No Suppliers", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    using (Form assignDialog = new Form())
+                    {
+                        assignDialog.Text = $"Assign Supplier to {ingredient.Name}";
+                        assignDialog.Size = new Size(400, 250);
+                        assignDialog.StartPosition = FormStartPosition.CenterParent;
+                        assignDialog.BackColor = DeepSeekSurface;
+                        assignDialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                        assignDialog.MaximizeBox = false;
+                        assignDialog.MinimizeBox = false;
+
+                        Label lblInstruction = new Label
+                        {
+                            Text = "Select a supplier to link with this ingredient:",
+                            Location = new Point(20, 20),
+                            Size = new Size(340, 25),
+                            ForeColor = DeepSeekText,
+                            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+                        };
+
+                        ComboBox cmbAllSuppliers = new ComboBox
+                        {
+                            Location = new Point(20, 55),
+                            Size = new Size(340, 30),
+                            DropDownStyle = ComboBoxStyle.DropDownList,
+                            BackColor = DeepSeekBg,
+                            ForeColor = DeepSeekText,
+                            Font = new Font("Segoe UI", 11)
+                        };
+
+                        foreach (var s in allSuppliers) cmbAllSuppliers.Items.Add(s);
+                        cmbAllSuppliers.DisplayMember = "Name";
+                        if (cmbAllSuppliers.Items.Count > 0) cmbAllSuppliers.SelectedIndex = 0;
+
+                        Button btnAssign = new Button
+                        {
+                            Text = "Assign & Order",
+                            Location = new Point(20, 110),
+                            Size = new Size(160, 40),
+                            BackColor = DeepSeekSuccess,
+                            ForeColor = DeepSeekText,
+                            FlatStyle = FlatStyle.Flat,
+                            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                            DialogResult = DialogResult.OK
+                        };
+
+                        Button btnCancelAssign = new Button 
+                        {
+                            Text = "Cancel",
+                            Location = new Point(200, 110),
+                            Size = new Size(160, 40),
+                            BackColor = DeepSeekDanger,
+                            ForeColor = DeepSeekText,
+                            FlatStyle = FlatStyle.Flat,
+                            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                            DialogResult = DialogResult.Cancel
+                        };
+
+                        assignDialog.Controls.AddRange(new Control[] { lblInstruction, cmbAllSuppliers, btnAssign, btnCancelAssign }); // <-- Updated here
+
+
+                        if (assignDialog.ShowDialog() == DialogResult.OK && cmbAllSuppliers.SelectedItem is Supplier selectedSupplier)
+                        {
+                            try
+                            {
+                                // Link the ingredient to the chosen supplier
+                                var existingIngs = dbService.GetSupplierIngredients(selectedSupplier.Id);
+                                if (!existingIngs.Contains(ingredient.Id))
+                                {
+                                    existingIngs.Add(ingredient.Id);
+                                    dbService.SaveSupplierIngredients(selectedSupplier.Id, existingIngs);
+                                }
+
+                                // Jump straight to creating the PO
+                                GoToSupplierPurchaseOrder(selectedSupplier.Id, ingredient.Id, suggestedQty);
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show($"Error assigning supplier: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            }
+                        }
+                    }
+                }
+                return; // Exit so the old dialog doesn't show
+            }
+            // ▲▲▲ END OF NEW LOGIC ▲▲▲
+
             bool singleSupplier = suppliersForIngredient.Count == 1;
 
             // Build the dialog
@@ -1378,20 +1468,6 @@ namespace TenDegreesPOS_New
                 AutoSize = true
             };
 
-            // --- Warning if no supplier ---
-            Label? lblNoSupplier = null;
-            if (!hasSupplier)
-            {
-                lblNoSupplier = new Label
-                {
-                    Text = "⚠ This ingredient has no supplier assigned.\nAssign one in Supplier Management first.",
-                    Font = new Font("Segoe UI", 10, FontStyle.Bold),
-                    ForeColor = DeepSeekDanger,
-                    Location = new Point(20, 215),
-                    Size = new Size(460, 45)
-                };
-            }
-
             // --- Buttons ---
             Button btnOrderNow = new Button
             {
@@ -1403,7 +1479,7 @@ namespace TenDegreesPOS_New
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 FlatAppearance = { BorderSize = 0 },
-                Enabled = hasSupplier && (singleSupplier || false)
+                Enabled = singleSupplier
             };
 
             Button btnAddQueue = new Button
@@ -1416,7 +1492,7 @@ namespace TenDegreesPOS_New
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 FlatAppearance = { BorderSize = 0 },
-                Enabled = hasSupplier && (singleSupplier || false)
+                Enabled = singleSupplier
             };
 
             Button btnCancel = new Button
@@ -1435,7 +1511,7 @@ namespace TenDegreesPOS_New
             // Enable buttons when a supplier is chosen
             cmbSupplier.SelectedIndexChanged += (s, e) =>
             {
-                bool ok = cmbSupplier.SelectedItem is Supplier && hasSupplier;
+                bool ok = cmbSupplier.SelectedItem is Supplier;
                 btnOrderNow.Enabled = ok;
                 btnAddQueue.Enabled = ok;
             };
@@ -1473,36 +1549,13 @@ namespace TenDegreesPOS_New
                 dialog.Close();
             };
 
-            // --- Go to suppliers link (only when no supplier) ---
-            if (lblNoSupplier != null)
-            {
-                LinkLabel lnkGoToSuppliers = new LinkLabel
-                {
-                    Text = "→ Open Supplier Management",
-                    Location = new Point(20, 260),
-                    AutoSize = true,
-                    LinkColor = DeepSeekAccent,
-                    Font = new Font("Segoe UI", 10, FontStyle.Underline)
-                };
-                lnkGoToSuppliers.LinkClicked += (s, e) =>
-                {
-                    dialog.Close();
-                    ShowSupplierManagement();
-                    if (tcSupplier != null && tcSupplier.TabPages.Count > 1)
-                        tcSupplier.SelectedIndex = 1; // Assign Ingredients tab
-                };
-                dialog.Controls.Add(lnkGoToSuppliers);
-            }
-
             // Add all controls
             dialog.Controls.AddRange(new Control[] {
-        lblHeader, lblStockInfo, lblSuggested,
-        lblSupplier, cmbSupplier,
-        lblQty, nudQty, lblUnit,
-        btnOrderNow, btnAddQueue, btnCancel
-    });
-
-            if (lblNoSupplier != null) dialog.Controls.Add(lblNoSupplier);
+                lblHeader, lblStockInfo, lblSuggested,
+                lblSupplier, cmbSupplier,
+                lblQty, nudQty, lblUnit,
+                btnOrderNow, btnAddQueue, btnCancel
+            });
 
             dialog.ShowDialog();
         }
@@ -1887,21 +1940,23 @@ namespace TenDegreesPOS_New
                     };
                     btnViewIngredients.Click += BtnViewIngredients_Click!;
 
-                    Button btnDelete = new Button
-                    {
-                        Text = "Delete",
-                        Size = new Size(80, 32),
-                        Location = new Point(210, 80 + yOffset),
-                        BackColor = DeepSeekDanger,
-                        ForeColor = DeepSeekText,
-                        FlatStyle = FlatStyle.Flat,
-                        Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                        Tag = product,
-                        FlatAppearance = { BorderSize = 0 }
-                    };
-                    btnDelete.Click += BtnDeleteProduct_Click!;
+                    // ▼▼▼ HIDDEN DELETE BUTTON ▼▼▼
+                    //Button btnDelete = new Button
+                    //{
+                    //    Text = "Delete",
+                    //    Size = new Size(80, 32),
+                    //    Location = new Point(210, 80 + yOffset),
+                    //    BackColor = DeepSeekDanger,
+                    //    ForeColor = DeepSeekText,
+                    //    FlatStyle = FlatStyle.Flat,
+                    //    Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                    //    Tag = product,
+                    //    FlatAppearance = { BorderSize = 0 }
+                    //};
+                    //btnDelete.Click += BtnDeleteProduct_Click!;
 
-                    card.Controls.AddRange(new Control[] { lblName, lblCategory, btnEdit, btnViewIngredients, btnDelete });
+                    card.Controls.AddRange(new Control[] { lblName, lblCategory, btnEdit, btnViewIngredients });
+                    // ▲▲▲ END OF HIDDEN DELETE BUTTON ▲▲▲
                     flpProducts.Controls.Add(card);
                 }
             }
@@ -2068,7 +2123,8 @@ namespace TenDegreesPOS_New
                             QuantitySmall = pi.QuantitySmall,
                             QuantityMedium = pi.QuantityMedium,
                             QuantityLarge = pi.QuantityLarge,
-                            Ingredient = pi.Ingredient
+                            Ingredient = pi.Ingredient,
+                            RequiredSize = pi.RequiredSize
                         });
                     }
                 }
@@ -2141,11 +2197,25 @@ namespace TenDegreesPOS_New
         {
             if (txtProductName == null || cmbProductCategory == null) return;
 
-            if (string.IsNullOrWhiteSpace(txtProductName.Text))
+            string productName = txtProductName.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(productName))
             {
                 MessageBox.Show("Product name is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+
+            // ▼▼▼ ADD THIS VALIDATION ▼▼▼
+            var existingProduct = dbService.GetAllProducts()
+                .FirstOrDefault(p => p.Name.Equals(productName, StringComparison.OrdinalIgnoreCase));
+
+            if (existingProduct != null && existingProduct.Id != (selectedProductId ?? 0))
+            {
+                MessageBox.Show($"A product named '{productName}' already exists.\n\nPlease use a different name or edit the existing product.",
+                    "Duplicate Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            // ▲▲▲ END OF VALIDATION ▲▲▲
 
             var selectedCategoryName = cmbProductCategory.SelectedItem?.ToString();
             var category = dbService.GetAllCategories().FirstOrDefault(c => c.Name == selectedCategoryName);
@@ -3185,9 +3255,9 @@ namespace TenDegreesPOS_New
                 // Gather data
                 var allTransactions = dbService.GetAllTransactions();
                 var transactions = allTransactions
-    .Where(t => t.TransactionDate >= startDate && t.TransactionDate <= endDate
-             && (t.Status == "Completed" || t.Status == "Fulfilled"))
-    .ToList();
+                    .Where(t => t.TransactionDate >= startDate && t.TransactionDate <= endDate
+                             && (t.Status == "Completed" || t.Status == "Fulfilled"))
+                    .ToList();
 
                 decimal totalSales = transactions.Sum(t => t.Total);
                 int totalItemsSold = transactions.Sum(t => t.TransactionItems?.Sum(ti => ti.Quantity) ?? 0);
@@ -3357,8 +3427,8 @@ namespace TenDegreesPOS_New
                 totalItemsSold,
                 totalTransactions,
                 productPerformanceList,
-                new List<SalesChartDataPoint>(), // Empty for now, but you can pass chart data if you want it in the preview
-                () => BtnExportSalesPDF_Click(null, EventArgs.Empty) // Call the export method if they click Export in the preview
+                new List<SalesChartDataPoint>(),
+                () => BtnExportSalesPDF_Click(null, EventArgs.Empty)
             ))
             {
                 previewForm.ShowDialog();
@@ -3995,7 +4065,7 @@ namespace TenDegreesPOS_New
             // Get data
             var allTransactions = dbService.GetAllTransactions();
             var transactions = allTransactions
-                .Where(t => t.TransactionDate >= startDate && t.TransactionDate <= endDate && t.Status == "Completed")
+                .Where(t => t.TransactionDate >= startDate && t.TransactionDate <= endDate && (t.Status == "Completed" || t.Status == "Fulfilled"))
                 .ToList();
 
             decimal totalSales = transactions.Sum(t => t.Total);
@@ -4041,7 +4111,7 @@ namespace TenDegreesPOS_New
                 });
             }
 
-            // Build chart data
+            // Build chart data (if needed)
             var chartData = new List<SalesChartDataPoint>();
             for (DateTime date = startDate; date <= endDate; date = date.AddDays(1))
             {
@@ -4066,7 +4136,6 @@ namespace TenDegreesPOS_New
                 {
                     await File.WriteAllBytesAsync(saveDialog.FileName, pdfBytes);
 
-                    // Ask if user wants to open the file
                     DialogResult openResult = MessageBox.Show("Would you like to open the PDF file?", "Open File",
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                     if (openResult == DialogResult.Yes)
@@ -5793,7 +5862,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             cmbAdjustOperation = new ComboBox { Location = new Point(450, 15), Size = new Size(80, 35), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = DeepSeekSurface, ForeColor = DeepSeekText };
             cmbAdjustOperation.Items.AddRange(new object[] { "+ Add", "- Subtract" });
             cmbAdjustOperation.SelectedIndex = 0;
-            nudAdjustQuantity = new NumericUpDown { Location = new Point(540, 15), Size = new Size(100, 35), Minimum = 0.1m, Maximum = 10000, DecimalPlaces = 1, Value = 1, BackColor = DeepSeekSurface, ForeColor = DeepSeekText };
+            nudAdjustQuantity = new NumericUpDown { Location = new Point(540, 15), Size = new Size(100, 35), Minimum = 0.1m, Maximum = 10000000, DecimalPlaces = 1, Value = 1, BackColor = DeepSeekSurface, ForeColor = DeepSeekText };
             Button btnApplyAdjustment = new Button { Text = "Apply", Location = new Point(660, 15), Size = new Size(100, 35), BackColor = DeepSeekAccent, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 } };
             btnApplyAdjustment.Click += BtnApplyAdjustment_Click!;
             pnlStockAdjustment.Controls.AddRange(new Control[] { lblAdjustTitle, lblSelectedIngredient, cmbAdjustOperation, nudAdjustQuantity, btnApplyAdjustment });
@@ -5897,8 +5966,8 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             btnCancelIngredient = new Button { Text = "Cancel", Location = new Point(145, 245), Size = new Size(100, 35), BackColor = DeepSeekTextMuted, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
             btnCancelIngredient.Click += (s, e) => { pnlIngredientForm.Visible = false; ClearIngredientForm(); };
 
-            btnDeleteIngredient = new Button { Text = "Delete", Location = new Point(255, 245), Size = new Size(100, 35), BackColor = DeepSeekDanger, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
-            btnDeleteIngredient.Click += BtnDeleteIngredient_Click!;
+           // btnDeleteIngredient = new Button { Text = "Delete", Location = new Point(255, 245), Size = new Size(100, 35), BackColor = DeepSeekDanger, ForeColor = DeepSeekText, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 10, FontStyle.Bold), FlatAppearance = { BorderSize = 0 } };
+            // btnDeleteIngredient.Click += BtnDeleteIngredient_Click!;
 
             pnlIngredientForm.Controls.AddRange(new Control[] {
                 lblFormTitle,
@@ -5912,7 +5981,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 dgvPackagingVariants,
                 pnlVariantInputs,
                 btnCancelVariantEdit,
-                btnSaveIngredient, btnCancelIngredient, btnDeleteIngredient
+                btnSaveIngredient, btnCancelIngredient
             });
 
             // Add to main content
@@ -6090,29 +6159,50 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
         private void BtnApplyAdjustment_Click(object sender, EventArgs e)
         {
-            if (!selectedIngredientId.HasValue) { MessageBox.Show("Please select an ingredient first.", "No Ingredient Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            if (!selectedIngredientId.HasValue)
+            {
+                MessageBox.Show("Please select an ingredient first.", "No Ingredient Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             decimal adjustAmount = nudAdjustQuantity?.Value ?? 0;
             bool isAdd = cmbAdjustOperation?.SelectedIndex == 0;
+
             try
             {
                 var inventory = dbService.GetInventoryForIngredient(selectedIngredientId.Value);
                 if (inventory != null)
                 {
-                    if (isAdd) { dbService.AdjustInventory(inventory.Id, adjustAmount); MessageBox.Show($"Added {adjustAmount} to inventory.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                    if (isAdd)
+                    {
+                        dbService.AdjustInventory(inventory.Id, adjustAmount);
+                        MessageBox.Show($"Added {adjustAmount} to inventory.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
                     else
                     {
+                        // ▼▼▼ BLOCK NEGATIVE STOCK ▼▼▼
                         if (inventory.Quantity < adjustAmount)
                         {
-                            DialogResult result = MessageBox.Show($"Warning: You're trying to subtract {adjustAmount} but only {inventory.Quantity} is available.\n\nContinue anyway?", "Insufficient Stock", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                            if (result == DialogResult.Yes) { dbService.AdjustInventory(inventory.Id, -adjustAmount); MessageBox.Show($"Subtracted {adjustAmount} from inventory.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                            MessageBox.Show($"Cannot subtract {adjustAmount} because only {inventory.Quantity} is available.\n\nStock cannot go below zero.",
+                                "Insufficient Stock", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            return; // Stop execution here so it doesn't subtract
                         }
-                        else { dbService.AdjustInventory(inventory.Id, -adjustAmount); MessageBox.Show($"Subtracted {adjustAmount} from inventory.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+
+                        dbService.AdjustInventory(inventory.Id, -adjustAmount);
+                        MessageBox.Show($"Subtracted {adjustAmount} from inventory.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        // ▲▲▲ END OF FIX ▲▲▲
                     }
                     LoadIngredientLibrary();
                 }
-                else { MessageBox.Show("No inventory record found for this ingredient.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                else
+                {
+                    MessageBox.Show("No inventory record found for this ingredient.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
-            catch (Exception ex) { MessageBox.Show($"Error adjusting inventory: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error adjusting inventory: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void BtnAddIngredientLib_Click(object sender, EventArgs e)
@@ -6160,6 +6250,10 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 // Safe assignment with null checks
                 if (cmbIngredientUnit != null) cmbIngredientUnit.SelectedItem = ingredient.Unit ?? "g";
                 if (cmbItemType != null) cmbItemType.SelectedItem = ingredient.ItemType ?? "Ingredient";
+                if (cmbVariantUnit != null && ingredient.Unit != null)
+                {
+                    cmbVariantUnit.SelectedItem = ingredient.Unit;
+                }
                 if (nudMinimumStock != null) nudMinimumStock.Value = ingredient.MinimumStock;
                 if (chkIngredientActive != null) chkIngredientActive.Checked = ingredient.IsActive;
                 if (nudReorderPoint != null) nudReorderPoint.Value = ingredient.ReorderPoint;
@@ -6252,16 +6346,29 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         private void BtnSaveIngredient_Click(object sender, EventArgs e)
         {
             if (txtIngredientName == null || cmbIngredientUnit == null || nudMinimumStock == null) return;
-            if (string.IsNullOrWhiteSpace(txtIngredientName.Text))
+
+            string ingredientName = txtIngredientName.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(ingredientName))
             {
                 MessageBox.Show("Ingredient name is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
+            // ▼▼▼ ADD THIS VALIDATION ▼▼▼
+            var existingIngredient = dbService.GetIngredientByName(ingredientName);
+            if (existingIngredient != null && existingIngredient.Id != (selectedIngredientId ?? 0))
+            {
+                MessageBox.Show($"An item named '{ingredientName}' already exists.\n\nPlease use a different name or edit the existing item.",
+                    "Duplicate Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            // ▲▲▲ END OF VALIDATION ▲▲▲
+
             var ingredient = selectedIngredientId.HasValue ? dbService.GetIngredientById(selectedIngredientId.Value) : new Ingredient();
             if (ingredient == null) return;
 
-            ingredient.Name = txtIngredientName.Text;
+            ingredient.Name = ingredientName;
             ingredient.Unit = cmbIngredientUnit.SelectedItem.ToString();
             ingredient.MinimumStock = (int)nudMinimumStock.Value;
             ingredient.ReorderPoint = nudReorderPoint?.Value ?? ingredient.MinimumStock;
@@ -6364,8 +6471,95 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
             if (suppliersForIngredient.Count == 0)
             {
-                MessageBox.Show($"No suppliers found for '{ingredient.Name}'.\n\nPlease assign this ingredient to a supplier first.",
-                    "No Suppliers", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                DialogResult result = MessageBox.Show(
+                    $"No suppliers found for '{ingredient.Name}'.\n\nWould you like to assign a supplier to this ingredient now?",
+                    "No Suppliers", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    // Show a quick dialog to pick a supplier
+                    using (Form assignDialog = new Form())
+                    {
+                        assignDialog.Text = $"Assign Supplier to {ingredient.Name}";
+                        assignDialog.Size = new Size(400, 250);
+                        assignDialog.StartPosition = FormStartPosition.CenterParent;
+                        assignDialog.BackColor = DeepSeekSurface;
+                        assignDialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                        assignDialog.MaximizeBox = false;
+                        assignDialog.MinimizeBox = false;
+
+                        Label lblInstruction = new Label
+                        {
+                            Text = "Select a supplier to link with this ingredient:",
+                            Location = new Point(20, 20),
+                            Size = new Size(340, 25),
+                            ForeColor = DeepSeekText,
+                            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+                        };
+
+                        ComboBox cmbAllSuppliers = new ComboBox
+                        {
+                            Location = new Point(20, 55),
+                            Size = new Size(340, 30),
+                            DropDownStyle = ComboBoxStyle.DropDownList,
+                            BackColor = DeepSeekBg,
+                            ForeColor = DeepSeekText,
+                            Font = new Font("Segoe UI", 11)
+                        };
+
+                        var activeSuppliers = dbService.GetAllSuppliers().Where(s => s.IsActive).ToList();
+                        foreach (var s in activeSuppliers) cmbAllSuppliers.Items.Add(s);
+                        cmbAllSuppliers.DisplayMember = "Name";
+                        if (cmbAllSuppliers.Items.Count > 0) cmbAllSuppliers.SelectedIndex = 0;
+
+                        Button btnAssign = new Button
+                        {
+                            Text = "Assign & Order",
+                            Location = new Point(20, 110),
+                            Size = new Size(160, 40),
+                            BackColor = DeepSeekSuccess,
+                            ForeColor = DeepSeekText,
+                            FlatStyle = FlatStyle.Flat,
+                            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                            DialogResult = DialogResult.OK
+                        };
+
+                        Button btnCancel = new Button
+                        {
+                            Text = "Cancel",
+                            Location = new Point(200, 110),
+                            Size = new Size(160, 40),
+                            BackColor = DeepSeekDanger,
+                            ForeColor = DeepSeekText,
+                            FlatStyle = FlatStyle.Flat,
+                            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                            DialogResult = DialogResult.Cancel
+                        };
+
+                        assignDialog.Controls.AddRange(new Control[] { lblInstruction, cmbAllSuppliers, btnAssign, btnCancel });
+
+                        if (assignDialog.ShowDialog() == DialogResult.OK && cmbAllSuppliers.SelectedItem is Supplier selectedSupplier)
+                        {
+                            try
+                            {
+                                // Link the ingredient to the chosen supplier
+                                var existingIngs = dbService.GetSupplierIngredients(selectedSupplier.Id);
+                                if (!existingIngs.Contains(ingredient.Id))
+                                {
+                                    existingIngs.Add(ingredient.Id);
+                                    dbService.SaveSupplierIngredients(selectedSupplier.Id, existingIngs);
+                                }
+
+                                // Immediately jump to the Purchase Order screen
+                                GoToSupplierPurchaseOrder(selectedSupplier.Id, ingredient.Id);
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show($"Error assigning supplier: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            }
+                        }
+                    }
+                }
                 return;
             }
 
@@ -6552,9 +6746,9 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         {
             if (dgvProductIngredients == null || currentProductIngredients == null) return;
 
-            // Check if the product has sizes to determine column visibility
             bool hasSizes = selectedProduct?.HasSizes ?? false;
 
+            // Toggle columns based on HasSizes
             if (dgvProductIngredients.Columns.Count > 0)
             {
                 dgvProductIngredients.Columns["QuantityMedium"].Visible = hasSizes;
@@ -6580,7 +6774,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                     }
                     else
                     {
-                        // If no sizes, show the single Quantity in the first column
                         smallQty = pi.Quantity.ToString("F2");
                         mediumQty = "-";
                         largeQty = "-";
@@ -6615,7 +6808,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 return;
             }
 
-            // Check if an ingredient is selected in the dropdown
             if (cmbIngredient?.SelectedItem == null)
             {
                 MessageBox.Show("Please select an ingredient from the dropdown or click an ingredient in the list.",
@@ -6627,120 +6819,25 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             var selectedIngredient = cmbIngredient.SelectedItem as Ingredient;
             if (selectedIngredient == null) return;
 
-            // Determine if the product uses sizes
             bool hasSizes = selectedProduct?.HasSizes ?? false;
 
-            // Get quantities from the numeric up/down controls
             decimal smallQty = nudSmallQty?.Value ?? 0;
             decimal mediumQty = nudMediumQty?.Value ?? 0;
             decimal largeQty = nudLargeQty?.Value ?? 0;
-            decimal singleQty = smallQty; // For non-sized products, nudSmallQty is used as the single quantity input
+            decimal singleQty = smallQty;
 
-            // ========== VALIDATION FOR CUP INGREDIENTS ==========
-            // Only run this validation if the product actually has sizes
-            if (hasSizes)
-            {
-                bool isSmallCup = selectedIngredient.Name == "Small Cup";
-                bool isMediumCup = selectedIngredient.Name == "Medium Cup";
-                bool isLargeCup = selectedIngredient.Name == "Large Cup";
+            // Auto-detect required size for Cups
+            string? requiredSize = null;
+            if (selectedIngredient.Name.Contains("Small Cup", StringComparison.OrdinalIgnoreCase)) requiredSize = "Small";
+            else if (selectedIngredient.Name.Contains("Medium Cup", StringComparison.OrdinalIgnoreCase)) requiredSize = "Medium";
+            else if (selectedIngredient.Name.Contains("Large Cup", StringComparison.OrdinalIgnoreCase)) requiredSize = "Large";
 
-                if (isSmallCup || isMediumCup || isLargeCup)
-                {
-                    // Validate that only ONE size has a value, and it's the correct one
-                    int nonZeroCount = 0;
-                    if (smallQty > 0) nonZeroCount++;
-                    if (mediumQty > 0) nonZeroCount++;
-                    if (largeQty > 0) nonZeroCount++;
-
-                    if (nonZeroCount > 1)
-                    {
-                        MessageBox.Show(
-                            $"For '{selectedIngredient.Name}', you can only set ONE size quantity.\n\n" +
-                            "Example:\n" +
-                            "• Small Cup: Small=1, Medium=0, Large=0\n" +
-                            "• Medium Cup: Small=0, Medium=1, Large=0\n" +
-                            "• Large Cup: Small=0, Medium=0, Large=1",
-                            "Invalid Cup Quantity",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Warning);
-                        return;
-                    }
-
-                    // Validate that the quantity is in the correct size column
-                    if (isSmallCup && mediumQty > 0)
-                    {
-                        MessageBox.Show("Small Cup should only have a value in the 'Small Qty' column.\n\nSet Medium Qty to 0.",
-                            "Invalid Cup Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    if (isMediumCup && smallQty > 0)
-                    {
-                        MessageBox.Show("Medium Cup should only have a value in the 'Medium Qty' column.\n\nSet Small Qty to 0.",
-                            "Invalid Cup Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    if (isMediumCup && largeQty > 0)
-                    {
-                        MessageBox.Show("Medium Cup should only have a value in the 'Medium Qty' column.\n\nSet Large Qty to 0.",
-                            "Invalid Cup Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    if (isLargeCup && mediumQty > 0)
-                    {
-                        MessageBox.Show("Large Cup should only have a value in the 'Large Qty' column.\n\nSet Medium Qty to 0.",
-                            "Invalid Cup Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-
-                    // For cup ingredients, ensure the value is 1 (or 0)
-                    if (nonZeroCount == 1)
-                    {
-                        // Find which one has the value and force it to 1
-                        if (smallQty > 0 && !isSmallCup)
-                        {
-                            MessageBox.Show($"The value you entered should be in the correct column.\n\n{selectedIngredient.Name} should only have a value in the {selectedIngredient.Name.Replace(" Cup", "")} Qty column.",
-                                "Invalid Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                            return;
-                        }
-                        if (mediumQty > 0 && !isMediumCup)
-                        {
-                            MessageBox.Show($"The value you entered should be in the correct column.\n\n{selectedIngredient.Name} should only have a value in the {selectedIngredient.Name.Replace(" Cup", "")} Qty column.",
-                                "Invalid Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                            return;
-                        }
-                        if (largeQty > 0 && !isLargeCup)
-                        {
-                            MessageBox.Show($"The value you entered should be in the correct column.\n\n{selectedIngredient.Name} should only have a value in the {selectedIngredient.Name.Replace(" Cup", "")} Qty column.",
-                                "Invalid Assignment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                            return;
-                        }
-
-                        // If it's a cup and has a value, ensure it's exactly 1
-                        if (isSmallCup && smallQty > 0 && smallQty != 1)
-                        {
-                            smallQty = 1;
-                            nudSmallQty.Value = 1;
-                        }
-                        if (isMediumCup && mediumQty > 0 && mediumQty != 1)
-                        {
-                            mediumQty = 1;
-                            nudMediumQty.Value = 1;
-                        }
-                        if (isLargeCup && largeQty > 0 && largeQty != 1)
-                        {
-                            largeQty = 1;
-                            nudLargeQty.Value = 1;
-                        }
-                    }
-                }
-            }
-
-            // Find if this ingredient already exists in the current list
             var existingIngredient = currentProductIngredients?.FirstOrDefault(pi => pi.IngredientId == selectedIngredient.Id);
 
             if (existingIngredient != null)
             {
-                // Update existing ingredient with new quantities
+                existingIngredient.RequiredSize = requiredSize;
+
                 if (hasSizes)
                 {
                     existingIngredient.QuantitySmall = smallQty;
@@ -6750,7 +6847,6 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 }
                 else
                 {
-                    // Save the single quantity and clear size fields
                     existingIngredient.Quantity = singleQty;
                     existingIngredient.QuantitySmall = null;
                     existingIngredient.QuantityMedium = null;
@@ -6759,12 +6855,12 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             }
             else
             {
-                // Add new ingredient to the list
                 var newIngredient = new ProductIngredient
                 {
                     ProductId = selectedProductId.Value,
                     IngredientId = selectedIngredient.Id,
-                    Ingredient = selectedIngredient
+                    Ingredient = selectedIngredient,
+                    RequiredSize = requiredSize
                 };
 
                 if (hasSizes)
@@ -6785,11 +6881,9 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 currentProductIngredients.Add(newIngredient);
             }
 
-            // Refresh the grid to show updated values
             RefreshIngredientsGrid();
             UpdateCostSummary();
 
-            // Reset the input fields
             if (nudSmallQty != null) nudSmallQty.Value = 0;
             if (nudMediumQty != null) nudMediumQty.Value = 0;
             if (nudLargeQty != null) nudLargeQty.Value = 0;
@@ -8001,7 +8095,24 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             txtSupplierName = new TextBox { Location = new Point(80, 42), Size = new Size(200, 30), BackColor = DeepSeekBg, ForeColor = DeepSeekText, BorderStyle = BorderStyle.FixedSingle };
 
             Label lblContact = new Label { Text = "Contact #:", Location = new Point(300, 45), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = DeepSeekTextMuted };
-            txtSupplierContact = new TextBox { Location = new Point(370, 42), Size = new Size(180, 30), BackColor = DeepSeekBg, ForeColor = DeepSeekText, BorderStyle = BorderStyle.FixedSingle };
+            txtSupplierContact = new TextBox
+            {
+                Location = new Point(370, 42),
+                Size = new Size(180, 30),
+                BackColor = DeepSeekBg,
+                ForeColor = DeepSeekText,
+                BorderStyle = BorderStyle.FixedSingle,
+                MaxLength = 11 // ▼ Added restriction to 11 characters
+            };
+
+            // ▼ Added restriction to only accept numbers
+            txtSupplierContact.KeyPress += (s, e) =>
+            {
+                if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar))
+                {
+                    e.Handled = true; // Block all non-numbers
+                }
+            };
 
             // Row 2: Email and Category
             Label lblEmail = new Label { Text = "Email:", Location = new Point(15, 85), AutoSize = true, Font = new Font("Segoe UI", 10), ForeColor = DeepSeekTextMuted };
@@ -8123,8 +8234,8 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
             pnlContent.Controls.AddRange(new Control[] { lblTitle, tcSupplier });
 
-            LoadSuppliers();
-            LoadPurchaseOrders();
+            try { LoadSuppliers(); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            try { LoadPurchaseOrders(); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
 
             pnlContent.Resize += (s, e) =>
             {
@@ -8660,14 +8771,11 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             dgvOrderCart.Columns.Add("Name", "Ingredient");
             dgvOrderCart.Columns.Add("Qty", "Qty");
             dgvOrderCart.Columns.Add("Unit", "Unit");
-            dgvOrderCart.Columns.Add("Cost", "Cost");
 
             dgvOrderCart.Columns["IngredientId"].Visible = false;
             dgvOrderCart.Columns["Name"].FillWeight = 45;
             dgvOrderCart.Columns["Qty"].FillWeight = 15;
             dgvOrderCart.Columns["Unit"].FillWeight = 15;
-            dgvOrderCart.Columns["Cost"].FillWeight = 25;
-            dgvOrderCart.Columns["Cost"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
 
             // CART ACTION PANEL
             Panel pnlCartAction = new Panel
@@ -8774,7 +8882,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
                 foreach (var v in variants)
                 {
-                    cmbPack.Items.Add($"{v.VariantName} ({v.Quantity} {v.Unit}) - ₱{v.Cost:N2}");
+                    cmbPack.Items.Add($"{v.VariantName} ({v.Quantity} {v.Unit})");
                 }
                 cmbPack.SelectedIndex = 0;
 
@@ -9419,19 +9527,24 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                 // Format the display to show both the packs and the base quantity
                 string displayQty = $"{item.Quantity:F1} ({item.BaseQuantity:F1} {item.Unit})";
 
+                // ▼▼▼ UPDATED TO 4 COLUMNS ▼▼▼
                 dgvOrderCart.Rows.Add(
                     item.IngredientId,
                     item.IngredientName,
-                    displayQty, // Shows e.g., "2.0 (1000.0 g)"
-                    item.VariantName,
-                    $"₱{lineTotal:N2}"
+                    displayQty,
+                    item.VariantName
                 );
+                // ▲▲▲ END OF UPDATE ▲▲▲
             }
 
             var lblTotalCost = pnlContent?.Controls.Find("lblTotalCost", true).FirstOrDefault() as Label;
             if (lblTotalCost != null)
             {
-                lblTotalCost.Text = $"₱{totalCost:N2}";
+                // Since we removed the visible costs, you can either hide the total completely 
+                // or leave it as 0 since price is now determined at receiving. 
+                // If you want to hide it entirely, just comment out the line below:
+                // lblTotalCost.Text = $"₱{totalCost:N2}"; 
+                lblTotalCost.Text = "₱0.00"; // Or leave this to keep the UI layout intact
             }
         }
 
@@ -9479,10 +9592,8 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                         unit: packUnit,
                         boxDisplayName: item.VariantName,
                         boxQuantityPerUnit: baseQtyPerPack,
-
-                        // ▼▼▼ THIS PASSES THE COST TO THE DB ▼▼▼
-                        unitPrice: item.UnitPrice
-                    // ▲▲▲ END OF LINE ▲▲▲
+                        unitPrice: item.UnitPrice,
+                        packagingVariantId: item.PackagingVariantId // <-- ADD
                     );
                 }).ToList();
 
@@ -9580,11 +9691,16 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                         dgvPurchaseOrders.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekSuccess;
                     else if (order.Status == "Cancelled")
                         dgvPurchaseOrders.Rows[rowIndex].Cells["Status"].Style.ForeColor = DeepSeekDanger;
+                    else if (order.Status == "Partially Received")
+                        dgvPurchaseOrders.Rows[rowIndex].Cells["Status"].Style.ForeColor = Color.FromArgb(20, 184, 166); // Teal
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error loading purchase orders: {ex.Message}");
+                // Unwrap to see the real error in the debug console
+                string errorMsg = ex.Message;
+                if (ex.InnerException != null) errorMsg += " | " + ex.InnerException.Message;
+                System.Diagnostics.Debug.WriteLine($"Error loading purchase orders: {errorMsg}");
             }
         }
 
@@ -9645,7 +9761,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                     try
                     {
                         // Receive all remaining boxes
-                        var receiveData = new Dictionary<int, (decimal Qty, DateTime ExpDate)>();
+                        var receiveData = new Dictionary<int, (decimal Qty, DateTime ExpDate, decimal UnitCost)>();
                         DateTime defaultExpiry = DateTime.Today.AddMonths(6);
 
                         foreach (var item in order.PurchaseOrderItems)
@@ -9653,7 +9769,8 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                             decimal remainingBoxes = item.BoxesOrdered - item.BoxesReceived;
                             if (remainingBoxes > 0)
                             {
-                                receiveData[item.Id] = (remainingBoxes, defaultExpiry);
+                                // Use the PO's UnitPrice as the default cost
+                                receiveData[item.Id] = (remainingBoxes, defaultExpiry, item.UnitPrice);
                             }
                         }
 
@@ -9684,7 +9801,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
         {
             Form dialog = new Form();
             dialog.Text = $"Receive - {order.OrderNumber}";
-            dialog.Size = new Size(750, 450); // Made wider
+            dialog.Size = new Size(750, 500); // Made slightly narrower since we removed a column
             dialog.StartPosition = FormStartPosition.CenterParent;
             dialog.BackColor = DeepSeekSurface;
             dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -9692,29 +9809,29 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             TableLayoutPanel tlp = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 5, // Increased to 5 columns
+                ColumnCount = 5, // Changed from 6 to 5
                 RowCount = order.PurchaseOrderItems.Count + 2,
                 Padding = new Padding(10),
                 BackColor = DeepSeekSurface
             };
 
-            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30)); // Name
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35)); // Name
             tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15)); // Qty
-            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20)); // Price
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20)); // NEW COST INPUT
             tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20)); // Exp Date
-            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15)); // Info
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 10)); // Info
 
             tlp.Controls.Add(new Label { Text = "Ingredient", ForeColor = DeepSeekText, Font = new Font("Segoe UI", 10, FontStyle.Bold) }, 0, 0);
             tlp.Controls.Add(new Label { Text = "To Receive", ForeColor = DeepSeekText, Font = new Font("Segoe UI", 10, FontStyle.Bold) }, 1, 0);
 
-            // ▼▼▼ NEW PRICE COLUMN ▼▼▼
-            tlp.Controls.Add(new Label { Text = "Unit Price", ForeColor = DeepSeekText, Font = new Font("Segoe UI", 10, FontStyle.Bold) }, 2, 0);
-            // ▲▲▲ END OF NEW COLUMN ▲▲▲
+            // ▼▼▼ RENAMED TO UNIT PRICE ▼▼▼
+            tlp.Controls.Add(new Label { Text = "Unit Price (₱)", ForeColor = DeepSeekText, Font = new Font("Segoe UI", 10, FontStyle.Bold) }, 2, 0);
+            // ▲▲▲ END OF RENAME ▲▲▲
 
             tlp.Controls.Add(new Label { Text = "Expiration Date", ForeColor = DeepSeekText, Font = new Font("Segoe UI", 10, FontStyle.Bold) }, 3, 0);
             tlp.Controls.Add(new Label { Text = "Batch", ForeColor = DeepSeekText, Font = new Font("Segoe UI", 10, FontStyle.Bold) }, 4, 0);
 
-            var receiveInputs = new Dictionary<int, (NumericUpDown Qty, DateTimePicker ExpDate)>();
+            var receiveInputs = new Dictionary<int, (NumericUpDown Qty, DateTimePicker ExpDate, NumericUpDown UnitCost)>();
             int row = 1;
 
             foreach (var item in order.PurchaseOrderItems)
@@ -9733,22 +9850,25 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
                     DecimalPlaces = 0,
                     Value = remainingPacks,
                     Increment = 1,
-                    Width = 80,
+                    Width = 70,
                     BackColor = DeepSeekBg,
                     ForeColor = DeepSeekText
                 };
                 tlp.Controls.Add(nudReceive, 1, row);
 
-                // ▼▼▼ DISPLAY THE PRICE ▼▼▼
-                Label lblPrice = new Label
+                // ▼▼▼ THE ACTUAL COST INPUT (NOW IN COLUMN 2) ▼▼▼
+                NumericUpDown nudActualCost = new NumericUpDown
                 {
-                    Text = $"₱{item.UnitPrice:N2}",
-                    ForeColor = DeepSeekAccent,
-                    Font = new Font("Segoe UI", 10, FontStyle.Bold),
-                    AutoSize = true
+                    Minimum = 0,
+                    Maximum = 100000,
+                    DecimalPlaces = 2,
+                    Value = item.UnitPrice, // Pre-fill with the estimated PO price
+                    Width = 90,
+                    BackColor = DeepSeekBg,
+                    ForeColor = DeepSeekSuccess
                 };
-                tlp.Controls.Add(lblPrice, 2, row);
-                // ▲▲▲ END DISPLAY PRICE ▲▲▲
+                tlp.Controls.Add(nudActualCost, 2, row);
+                // ▲▲▲ END OF COST INPUT ▲▲▲
 
                 DateTimePicker dtpExpiration = new DateTimePicker
                 {
@@ -9761,7 +9881,7 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
 
                 tlp.Controls.Add(new Label { Text = "New Batch", ForeColor = DeepSeekTextMuted, AutoSize = true }, 4, row);
 
-                receiveInputs[item.Id] = (nudReceive, dtpExpiration);
+                receiveInputs[item.Id] = (nudReceive, dtpExpiration, nudActualCost);
                 row++;
             }
 
@@ -9786,28 +9906,29 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             Panel pnlButtons = new Panel { Height = 50, Dock = DockStyle.Bottom };
             pnlButtons.Controls.Add(btnConfirm);
             pnlButtons.Controls.Add(btnCancel);
-            btnConfirm.Location = new Point(250, 10);
-            btnCancel.Location = new Point(390, 10);
+            btnConfirm.Location = new Point(330, 10);
+            btnCancel.Location = new Point(470, 10);
 
             dialog.Controls.Add(tlp);
             dialog.Controls.Add(pnlButtons);
 
             btnConfirm.Click += (s, e) =>
             {
-                var receiveData = new Dictionary<int, (decimal Qty, DateTime ExpDate)>();
+                // ▼▼▼ UPDATE DICTIONARY TO INCLUDE UNIT COST ▼▼▼
+                var receiveData = new Dictionary<int, (decimal Qty, DateTime ExpDate, decimal UnitCost)>();
                 foreach (var kvp in receiveInputs)
                 {
                     if (kvp.Value.Qty.Value > 0)
                     {
-                        receiveData[kvp.Key] = (kvp.Value.Qty.Value, kvp.Value.ExpDate.Value);
+                        receiveData[kvp.Key] = (kvp.Value.Qty.Value, kvp.Value.ExpDate.Value, kvp.Value.UnitCost.Value);
                     }
                 }
+                // ▲▲▲ END OF DICTIONARY UPDATE ▲▲▲
 
                 if (receiveData.Count > 0)
                 {
                     try
                     {
-                        // We will update this method next
                         dbService.ReceivePurchaseOrderWithBatches(order.Id, receiveData);
                         MessageBox.Show($"Receive completed for {order.OrderNumber}!", "Success",
                             MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -9840,28 +9961,39 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             details += "─────────────────────\n";
             details += "Items:\n";
 
-            decimal totalQuantity = 0;
+            decimal totalPacks = 0;
             decimal totalCost = 0;
 
             if (order.PurchaseOrderItems != null)
             {
                 foreach (var item in order.PurchaseOrderItems)
                 {
+                    // Determine if the item has been received, and get the correct pack count
+                    bool isReceived = item.BoxesReceived > 0;
+                    decimal displayPacks = isReceived ? item.BoxesReceived : item.BoxesOrdered;
+                    string packUnit = item.BoxUnit ?? "packs";
+
                     details += $"• {item.IngredientName}\n";
-                    details += $"  Ordered: {item.QuantityOrdered:F1} {item.Ingredient?.Unit ?? "units"}\n";
 
-                    // ▼▼▼ SHOW PRICE ▼▼▼
-                    details += $"  Unit Price: ₱{item.UnitPrice:N2}\n";
-                    details += $"  Total Cost: ₱{item.TotalPrice:N2}\n";
-                    // ▲▲▲ END SHOW PRICE ▲▲▲
+                    // Show base quantity for reference (e.g., 100g)
+                    decimal baseQty = isReceived ? item.QuantityReceived : item.QuantityOrdered;
+                    details += $"  Total Qty: {baseQty:F1} {item.Ingredient?.Unit ?? "units"}\n";
+                    details += $"  Packs: {displayPacks:F0} {packUnit}\n";
 
-                    totalQuantity += item.QuantityOrdered;
-                    totalCost += item.TotalPrice;
+                    // Calculate cost based on PACKS, not base units
+                    decimal displayPrice = item.ActualUnitCost > 0 ? item.ActualUnitCost : item.UnitPrice;
+                    decimal lineTotal = displayPrice * displayPacks;
+
+                    details += $"  Unit Price (per pack): ₱{displayPrice:N2}\n";
+                    details += $"  Total Cost: ₱{lineTotal:N2}\n";
+
+                    totalPacks += displayPacks;
+                    totalCost += lineTotal;
                 }
             }
 
             details += "─────────────────────\n";
-            details += $"Total Quantity: {totalQuantity:F1} units\n";
+            details += $"Total Packs: {totalPacks:F0}\n";
             details += $"Total Amount: ₱{totalCost:N2}\n";
 
             MessageBox.Show(details, "Purchase Order Details", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -10314,6 +10446,9 @@ tabPage.Controls.AddRange(new Control[] { pnlSearch, pnlGrid, pnlCancel });
             public bool IsCustomQuantity { get; set; } = false;
 
             public decimal UnitPrice { get; set; } = 0;
+            public decimal TotalPrice { get; set; }
+
+            public decimal ActualUnitCost { get; set; } = 0;
         }
 
         // ============================================================
