@@ -92,9 +92,12 @@ namespace TenDegreesPOS_New.Services
             TryAddColumn("Products", "PriceLarge", "DECIMAL");
             TryAddColumn("Products", "ImagePath", "TEXT");
 
+            TryAddColumn("Transactions", "Notes", "TEXT");
             // ---- Inventory Tracking ----
             TryAddColumn("Inventory", "ExpirationDate", "TEXT");
             TryAddColumn("Inventory", "DamagedQuantity", "DECIMAL DEFAULT 0");
+
+            TryAddColumn("InventoryBatches", "IsDeductedFromStock", "INTEGER DEFAULT 0");
 
             // ---- Ingredients (Item Type) ----
             TryAddColumn("Ingredients", "ItemType", "TEXT DEFAULT 'Ingredient'");
@@ -136,6 +139,62 @@ namespace TenDegreesPOS_New.Services
 
             // Add this line to handle existing databases
             TryAddColumn("PackagingVariants", "Cost", "DECIMAL DEFAULT 0");
+
+            // ============================================================
+            // CATEGORY MIGRATION (Overwrite old categories with new ones)
+            // ============================================================
+            try
+            {
+                // Define the new categories we want to ensure exist
+                var newCategoryNames = new[]
+                {
+                    "Signature Coffee", "Classic Coffee", "Matcha", "Frappe",
+                    "Non-Coffee", "Refreshers & Tea", "Extras/Add-ons",
+                    "Snacks", "Desserts", "Pasta", "Pizza & Sharing"
+                };
+
+                var currentCategories = _context.Categories.ToList();
+
+                // 1. Remove categories that are NOT in our new list
+                var categoriesToRemove = currentCategories.Where(c => !newCategoryNames.Contains(c.Name)).ToList();
+
+                if (categoriesToRemove.Any())
+                {
+                    // First, reassign any products using these old categories to a default new category
+                    var defaultCategory = currentCategories.FirstOrDefault(c => newCategoryNames.Contains(c.Name));
+
+                    if (defaultCategory != null)
+                    {
+                        foreach (var oldCat in categoriesToRemove)
+                        {
+                            var productsInOldCat = _context.Products.Where(p => p.CategoryId == oldCat.Id).ToList();
+                            foreach (var p in productsInOldCat)
+                            {
+                                p.CategoryId = defaultCategory.Id; // Move to "Signature Coffee" (or whichever is first)
+                            }
+                        }
+                    }
+
+                    _context.Categories.RemoveRange(categoriesToRemove);
+                    _context.SaveChanges();
+                }
+
+                // 2. Add any new categories that don't exist yet
+                var existingNames = _context.Categories.Select(c => c.Name).ToList();
+                foreach (var name in newCategoryNames)
+                {
+                    if (!existingNames.Contains(name))
+                    {
+                        _context.Categories.Add(new Category { Name = name, Description = $"{name} items" });
+                    }
+                }
+                _context.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Category migration skipped: {ex.Message}");
+            }
+
         }
 
         #endregion
@@ -732,29 +791,35 @@ namespace TenDegreesPOS_New.Services
                             _context.SaveChanges(); // Need the ID for the batch
                         }
 
-                        // ▼▼▼ FIX: Only add to sellable stock if it hasn't expired yet ▼▼▼
-                        if (expirationDate.Date >= DateTime.Today)
-                        {
-                            inventory.Quantity += quantityReceived;
-                        }
-                        else
-                        {
-                            // If it's already expired upon arrival, log it to the batch but don't add to sellable inventory.
-                            // It will sit in the "Expired" monitoring tab.
-                            System.Diagnostics.Debug.WriteLine($"Received expired item: {item.IngredientName}. Quantity not added to sellable stock.");
-                        }
-
-                        inventory.LastUpdated = DateTime.Now;
-
-                        // Create the new Batch record
+                        // ▼▼▼ CREATE THE BATCH FIRST ▼▼▼
                         var batch = new InventoryBatch
                         {
                             InventoryId = inventory.Id,
                             Quantity = quantityReceived,
                             ExpirationDate = expirationDate,
-                            ReceivedDate = DateTime.Now
+                            ReceivedDate = DateTime.Now,
+                            IsDeductedFromStock = false
                         };
                         _context.InventoryBatches.Add(batch);
+                        // ▲▲▲ END OF BATCH CREATION ▲▲▲
+
+                        // ▼▼▼ NOW DECIDE IF IT GOES TO SELLABLE STOCK ▼▼▼
+                        if (expirationDate.Date > DateTime.Today)
+                        {
+                            // Not expired yet - add to sellable stock
+                            inventory.Quantity += quantityReceived;
+                        }
+                        else
+                        {
+                            // Already expired (or expires today) upon arrival
+                            // Log it to the batch but don't add to sellable inventory.
+                            // Mark it as already deducted so the expiry sweep doesn't subtract it again.
+                            batch.IsDeductedFromStock = true;
+                            System.Diagnostics.Debug.WriteLine($"Received expired item: {item.IngredientName}. Quantity not added to sellable stock.");
+                        }
+
+                        inventory.LastUpdated = DateTime.Now;
+                        // ▲▲▲ END OF SELLABLE STOCK LOGIC ▲▲▲
 
                         if (item.BoxesReceived < item.BoxesOrdered - 0.01m)
                             allFullyReceived = false;
@@ -772,57 +837,85 @@ namespace TenDegreesPOS_New.Services
             }
         }
 
+        public void DisposeBatch(int batchId, decimal quantity, int userId, string reason)
+        {
+            using var dbTransaction = _context.Database.BeginTransaction();
+            try
+            {
+                var batch = _context.InventoryBatches
+                    .Include(b => b.Inventory)
+                    .ThenInclude(i => i.Ingredient)
+                    .FirstOrDefault(b => b.Id == batchId);
+
+                if (batch == null || batch.Inventory?.Ingredient == null) throw new Exception("Batch not found");
+                if (quantity <= 0) throw new Exception("Quantity must be greater than zero");
+                if (quantity > batch.Quantity) throw new Exception("Cannot dispose more than the batch quantity");
+
+                // 1. Deduct from the batch
+                batch.Quantity -= quantity;
+
+                // 2. Only deduct from parent inventory if it wasn't already deducted by the expiry sweep
+                if (!batch.IsDeductedFromStock)
+                {
+                    batch.Inventory.Quantity -= quantity;
+                    if (batch.Inventory.Quantity < 0) batch.Inventory.Quantity = 0;
+                    batch.Inventory.LastUpdated = DateTime.Now;
+                }
+                // Otherwise, the stock was already removed by ProcessExpiredBatches()
+
+                // 3. Create the disposal record
+                var record = new DisposalRecord
+                {
+                    IngredientId = batch.Inventory.IngredientId ?? 0,
+                    IngredientName = batch.Inventory.Ingredient.Name,
+                    Quantity = quantity,
+                    Unit = batch.Inventory.Unit,
+                    ExpirationDate = batch.ExpirationDate,
+                    DisposalDate = DateTime.Now,
+                    DisposedByUserId = userId,
+                    Reason = reason
+                };
+
+                _context.DisposalRecords.Add(record);
+                _context.SaveChanges();
+                dbTransaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                dbTransaction.Rollback();
+                throw new Exception($"Error disposing batch: {ex.Message}", ex);
+            }
+        }
         public void ProcessExpiredBatches()
         {
             try
             {
                 DateTime today = DateTime.Today;
-
-                // Find batches that are expired and are still counted in the active inventory
-                // (We can use a boolean flag in the model, or check if the parent inventory Qty > 0)
                 var expiredBatches = _context.InventoryBatches
                     .Include(ib => ib.Inventory)
-                    .Where(ib => ib.ExpirationDate.Date < today)
+                    .Where(ib => ib.ExpirationDate.Date <= today && ib.Quantity > 0 && ib.IsDeductedFromStock == false)
                     .ToList();
 
                 bool changesMade = false;
 
                 foreach (var batch in expiredBatches)
                 {
-                    if (batch.Inventory != null && batch.Quantity > 0)
+                    if (batch.Inventory != null)
                     {
-                        // Deduct from sellable stock
                         batch.Inventory.Quantity -= batch.Quantity;
-
-                        // Ensure it doesn't drop below 0
                         if (batch.Inventory.Quantity < 0) batch.Inventory.Quantity = 0;
-
                         batch.Inventory.LastUpdated = DateTime.Now;
 
-                        // Log that we processed this batch (so we don't deduct it again next time)
-                        // Since we don't have a flag, we'll just set the batch quantity to 0
-                        // and rely on the Monitoring module to show the historical data if needed.
-                        // For simplicity, we will leave the batch quantity, but we know it's expired.
-
-                        // To prevent infinite deduction, we need to mark the batch as "deducted".
-                        // Best way without changing schema: Delete the batch or set its Quantity to 0.
-                        // Let's set the quantity to 0 so it doesn't get deducted again.
-                        // (The Monitoring tab will still show it based on the ExpirationDate).
-                        batch.Quantity = 0;
+                        // Mark as deducted so we don't do it again, but keep the quantity!
+                        batch.IsDeductedFromStock = true;
 
                         changesMade = true;
                     }
                 }
 
-                if (changesMade)
-                {
-                    _context.SaveChanges();
-                }
+                if (changesMade) _context.SaveChanges();
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error processing expired batches: {ex.Message}");
-            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Error processing expired batches: {ex.Message}"); }
         }
         public void LogDamagedItem(int inventoryId, decimal damagedQty)
         {
@@ -919,11 +1012,17 @@ namespace TenDegreesPOS_New.Services
             {
                 var categories = new List<Category>
                 {
-                    new Category { Name = "Drinks", Description = "Beverages and drinks" },
-                    new Category { Name = "Foods", Description = "Food items" },
-                    new Category { Name = "Raw Materials", Description = "Ingredients and supplies" },
-                    new Category { Name = "Snacks", Description = "Snack items" },
-                    new Category { Name = "Desserts", Description = "Dessert items" }
+                    new Category { Name = "Signature Coffee", Description = "Specialty coffee blends" },
+                    new Category { Name = "Classic Coffee", Description = "Traditional coffee drinks" },
+                    new Category { Name = "Matcha", Description = "Matcha-based beverages" },
+                    new Category { Name = "Frappe", Description = "Blended iced drinks" },
+                    new Category { Name = "Non-Coffee", Description = "Non-coffee beverages" },
+                    new Category { Name = "Refreshers & Tea", Description = "Refreshing drinks and teas" },
+                    new Category { Name = "Extras/Add-ons", Description = "Add-ons like extra shots, syrups" },
+                    new Category { Name = "Snacks", Description = "Light snacks" },
+                    new Category { Name = "Desserts", Description = "Sweet treats" },
+                    new Category { Name = "Pasta", Description = "Pasta dishes" },
+                    new Category { Name = "Pizza & Sharing", Description = "Pizzas and sharing platters" }
                 };
 
                 _context.Categories.AddRange(categories);

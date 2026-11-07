@@ -6,6 +6,8 @@ namespace TenDegreesPOS_New.Models
     {
         public string TransactionNumber { get; set; } = string.Empty;
         public string MessageType { get; set; } = "NEW_ORDER"; // or "ORDER_COMPLETED"
+
+        public string Notes { get; set; } = string.Empty;
         public List<NetworkOrderItem> Items { get; set; } = new List<NetworkOrderItem>();
     }
 
@@ -14,5 +16,7 @@ namespace TenDegreesPOS_New.Models
         public string ProductName { get; set; } = string.Empty;
         public string Size { get; set; } = string.Empty;
         public int Quantity { get; set; }
+
+        public bool IsAddOn { get; set; }
     }
 }

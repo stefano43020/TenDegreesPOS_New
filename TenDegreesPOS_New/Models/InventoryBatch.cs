@@ -13,6 +13,8 @@ namespace TenDegreesPOS_New.Models
 
         public decimal Quantity { get; set; }
 
+        public bool IsDeductedFromStock { get; set; } = false;
+
         public DateTime ExpirationDate { get; set; }
 
         public DateTime ReceivedDate { get; set; } = DateTime.Now;

@@ -14,6 +14,8 @@ namespace TenDegreesPOS_New.Models
         [MaxLength(20)]
         public string TransactionNumber { get; set; } = string.Empty;
 
+        [MaxLength(500)]
+        public string? Notes { get; set; }
         public int? UserId { get; set; }
 
         public int? CustomerId { get; set; }

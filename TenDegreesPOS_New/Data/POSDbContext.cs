@@ -85,8 +85,12 @@ namespace TenDegreesPOS_New.Data
             modelBuilder.Entity<TransactionItem>()
                 .HasOne(ti => ti.Product)
                 .WithMany(p => p.TransactionItems)
-                .HasForeignKey(ti => ti.ProductId)
+                .HasForeignKey(ti => ti.ProductId)  
                 .OnDelete(DeleteBehavior.SetNull);
+
+            modelBuilder.Entity<Transaction>()
+            .Property(t => t.Notes)
+            .HasMaxLength(500);
 
             modelBuilder.Entity<Inventory>()
                 .HasOne(i => i.Product)

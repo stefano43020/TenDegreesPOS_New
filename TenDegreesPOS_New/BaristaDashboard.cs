@@ -393,20 +393,19 @@ namespace TenDegreesPOS_New
 
         private Panel CreateOrderCard(NetworkOrder order, bool isCompleted)
         {
-            // Extract the daily number
             string dailyNumber = "0";
             if (order.TransactionNumber.Length >= 4)
             {
                 string suffix = order.TransactionNumber.Substring(order.TransactionNumber.Length - 4);
-                if (int.TryParse(suffix, out int parsedNum))
-                {
-                    dailyNumber = parsedNum.ToString();
-                }
+                if (int.TryParse(suffix, out int parsedNum)) dailyNumber = parsedNum.ToString();
             }
+
+            // Increase card height if there are notes
+            int cardHeight = isCompleted ? 70 : (string.IsNullOrEmpty(order.Notes) ? 220 : 260);
 
             Panel card = new Panel
             {
-                Size = isCompleted ? new Size(300, 70) : new Size(300, 220),
+                Size = isCompleted ? new Size(300, 70) : new Size(320, cardHeight),
                 BackColor = isCompleted ? Color.FromArgb(28, 30, 34) : DeepSeekSurface,
                 Margin = new Padding(10),
                 Tag = order
@@ -427,15 +426,74 @@ namespace TenDegreesPOS_New
             {
                 Label lblOrderNo = new Label { Text = $"#{dailyNumber}", Font = new Font("Segoe UI", 11, FontStyle.Bold), ForeColor = DeepSeekTextMuted, Location = new Point(15, 15), AutoSize = true };
                 Label lblStatus = new Label { Text = "COMPLETED", Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = DeepSeekSuccess, Location = new Point(200, 17), Size = new Size(90, 18), TextAlign = ContentAlignment.MiddleCenter };
-                Label lblItems = new Label { Text = string.Join(", ", order.Items.ConvertAll(i => $"{i.Quantity}x {i.ProductName}")), Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(100, 100, 100), Location = new Point(15, 40), Size = new Size(270, 20), AutoEllipsis = true };
+
+                // Format items cleanly
+                string itemsText = string.Join(", ", order.Items.Where(i => !i.IsAddOn).Select(i => $"{i.Quantity}x {i.ProductName}"));
+                Label lblItems = new Label { Text = itemsText, Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(100, 100, 100), Location = new Point(15, 40), Size = new Size(280, 20), AutoEllipsis = true };
+
                 card.Controls.AddRange(new Control[] { lblOrderNo, lblStatus, lblItems });
             }
             else
             {
                 Label lblOrderNo = new Label { Text = $"#{dailyNumber}", Font = new Font("Segoe UI", 14, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
-
                 Label lblStatus = new Label { Name = "lblStatus", Text = "WAITING", Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = DeepSeekWarning, BackColor = Color.FromArgb(60, 45, 20), Location = new Point(180, 18), Size = new Size(100, 22), TextAlign = ContentAlignment.MiddleCenter };
-                Label lblItems = new Label { Text = string.Join("\n", order.Items.ConvertAll(i => $"• {i.Quantity}x {i.ProductName} {i.Size}")), Font = new Font("Segoe UI", 11), ForeColor = DeepSeekTextMuted, Location = new Point(15, 55), Size = new Size(270, 100), AutoEllipsis = true };
+
+                // ▼▼▼ FIX: DYNAMIC CARD HEIGHT ▼▼▼
+                int itemCount = order.Items.Count;
+                cardHeight = 100 + (itemCount * 18); // <-- No 'int' here
+                if (!string.IsNullOrEmpty(order.Notes)) cardHeight += 35;
+                if (cardHeight < 220) cardHeight = 220;
+                card.Size = new Size(320, cardHeight);
+                // ▲▲▲ END OF FIX ▲▲▲
+
+                int currentY = 55;
+
+                // Render Notes if they exist
+                if (!string.IsNullOrEmpty(order.Notes))
+                {
+                    Label lblNotes = new Label
+                    {
+                        Text = $"📝 Note: {order.Notes}",
+                        Font = new Font("Segoe UI", 9, FontStyle.Italic),
+                        ForeColor = DeepSeekWarning,
+                        Location = new Point(15, currentY),
+                        Size = new Size(290, 35),
+                        AutoEllipsis = true
+                    };
+                    card.Controls.Add(lblNotes);
+                    currentY += 35;
+                }
+
+                // Build item list with indents for add-ons
+                string itemsText = "";
+                foreach (var item in order.Items)
+                {
+                    // ▼▼▼ RELIABLE FIX: Check if the item has a size. If not, it's an add-on ▼▼▼
+                    // Main products will have "Small", "Medium", "Large", or "Regular" (not empty)
+                    bool isAddOn = string.IsNullOrEmpty(item.Size);
+
+                    if (isAddOn)
+                    {
+                        // Format: "      + 2x Oat Milk"
+                        itemsText += $"      + {item.Quantity}x {item.ProductName}\n";
+                    }
+                    else
+                    {
+                        // Format: "• 1x Americano (Small)"
+                        itemsText += $"• {item.Quantity}x {item.ProductName} ({item.Size})\n";
+                    }
+                    // ▲▲▲ END OF FIX ▲▲▲
+                }
+
+                Label lblItems = new Label
+                {
+                    Text = itemsText.TrimEnd(),
+                    Font = new Font("Segoe UI", 10),
+                    ForeColor = DeepSeekTextMuted,
+                    Location = new Point(15, currentY),
+                    Size = new Size(290, cardHeight - currentY - 50),
+                    AutoEllipsis = true
+                };
 
                 Button btnAction = new Button
                 {
@@ -443,8 +501,8 @@ namespace TenDegreesPOS_New
                     Font = new Font("Segoe UI", 10, FontStyle.Bold),
                     ForeColor = Color.Black,
                     BackColor = DeepSeekWarning,
-                    Location = new Point(15, 165),
-                    Size = new Size(270, 40),
+                    Location = new Point(15, cardHeight - 45),
+                    Size = new Size(290, 35),
                     FlatStyle = FlatStyle.Flat,
                     FlatAppearance = { BorderSize = 0 },
                     Cursor = Cursors.Hand
@@ -461,31 +519,27 @@ namespace TenDegreesPOS_New
                         btnAction.BackColor = DeepSeekSuccess;
                         card.Invalidate();
 
-                        // Move to preparing panel
                         flpWaitingOrders.Controls.Remove(card);
                         flpPreparingOrders.Controls.Add(card);
 
-                        // Send message to Cashier
-                        var prepMsg = new NetworkOrder
-                        {
-                            TransactionNumber = order.TransactionNumber,
-                            MessageType = "ORDER_PREPARING"
-                        };
-                        string json = System.Text.Json.JsonSerializer.Serialize(prepMsg);
-                        await _tcpClient.SendMessageAsync(json);
+                        var prepMsg = new NetworkOrder { TransactionNumber = order.TransactionNumber, MessageType = "ORDER_PREPARING" };
+                        await _tcpClient.SendMessageAsync(System.Text.Json.JsonSerializer.Serialize(prepMsg));
                     }
                     else if (lblStatus.Text == "PREPARING")
                     {
-                        // 1. Move to the completed column visually
                         MoveToCompleted(card, order);
 
-                        // 2. Send the completion signal to the Cashier (Server)
                         var completionMsg = new NetworkOrder
                         {
                             TransactionNumber = order.TransactionNumber,
                             MessageType = "ORDER_COMPLETED"
                         };
                         string json = System.Text.Json.JsonSerializer.Serialize(completionMsg);
+
+                        // ▼▼▼ DEBUG: verify the message is being sent ▼▼▼
+                        System.Diagnostics.Debug.WriteLine($"SENDING: {json}");
+                        // ▲▲▲ END OF DEBUG ▲▲▲
+
                         await _tcpClient.SendMessageAsync(json);
                     }
                 };

@@ -21,6 +21,7 @@ namespace TenDegreesPOS_New
         private Button? btnInventory;
         private Button? btnSettings;
 
+        private string currentOrderNotes = "";
         private TcpServerService _tcpServer = new TcpServerService();
 
         // Quantity adjustment controls
@@ -234,7 +235,7 @@ namespace TenDegreesPOS_New
                     {
                         if (flpCashierQueue == null) return;
 
-                        // Find the specific card
+                        // Find the specific card in EITHER queue
                         Panel? targetCard = null;
                         foreach (Control control in flpCashierQueue.Controls)
                         {
@@ -244,14 +245,25 @@ namespace TenDegreesPOS_New
                                 break;
                             }
                         }
+                        // If not found in the waiting queue, check the preparing queue
+                        if (targetCard == null && flpPreparingQueue != null)
+                        {
+                            foreach (Control control in flpPreparingQueue.Controls)
+                            {
+                                if (control is Panel card && card.Tag is string orderNum && orderNum == orderMsg.TransactionNumber)
+                                {
+                                    targetCard = card;
+                                    break;
+                                }
+                            }
+                        }
 
                         if (orderMsg.MessageType == "NEW_ORDER")
                         {
-                            // Add card if it doesn't exist
                             if (targetCard == null)
                             {
                                 AddCardToCashierQueue(orderMsg);
-                                UpdateQueueBadge(); // Update badge count
+                                UpdateQueueBadge();
                             }
                         }
                         else if (orderMsg.MessageType == "ORDER_PREPARING")
@@ -268,27 +280,32 @@ namespace TenDegreesPOS_New
                                 }
                                 targetCard.BackColor = Color.FromArgb(30, 40, 55);
 
-                                // ▼▼▼ MOVE CARD TO PREPARING PANEL ▼▼▼
+                                // Move the card visually from waiting to preparing
                                 flpCashierQueue.Controls.Remove(targetCard);
-                                flpPreparingQueue.Controls.Add(targetCard);
-                                // ▲▲▲ END ▼▲▲
+                                if (flpPreparingQueue != null) flpPreparingQueue.Controls.Add(targetCard);
                             }
                         }
                         else if (orderMsg.MessageType == "ORDER_COMPLETED")
                         {
                             preparingTransactions.Remove(orderMsg.TransactionNumber);
 
+                            // Remove the card from whichever queue it's in
                             if (targetCard != null)
                             {
-                                // Remove from whichever panel it's currently in
                                 if (flpCashierQueue.Controls.Contains(targetCard))
                                     flpCashierQueue.Controls.Remove(targetCard);
-                                else if (flpPreparingQueue.Controls.Contains(targetCard))
+                                if (flpPreparingQueue != null && flpPreparingQueue.Controls.Contains(targetCard))
                                     flpPreparingQueue.Controls.Remove(targetCard);
 
                                 targetCard.Dispose();
                             }
-
+                            else
+                            {
+                                // ▼▼▼ FALLBACK: If we can't find the card reference, remove by TransactionNumber ▼▼▼
+                                RemoveCardByTransactionNumber(flpCashierQueue, orderMsg.TransactionNumber);
+                                if (flpPreparingQueue != null) RemoveCardByTransactionNumber(flpPreparingQueue, orderMsg.TransactionNumber);
+                                // ▲▲▲ END OF FALLBACK ▲▲▲
+                            }
                             // Update DB status
                             var tx = dbService.GetTransactionByNumber(orderMsg.TransactionNumber);
                             if (tx != null)
@@ -296,12 +313,31 @@ namespace TenDegreesPOS_New
                                 dbService.UpdateTransactionStatus(tx.Id, "Fulfilled");
                             }
 
-                            UpdateQueueBadge(); // Update badge count
+                            // ▼▼▼ Refresh the badge (which should now show fewer waiting orders)
+                            UpdateQueueBadge();
+                            // ▲▲▲ END OF FIX ▲▲▲
+
+                            MessageBox.Show($"Order #{orderMsg.TransactionNumber.Split('-').Last()} has been completed by the Barista.",
+                                "Order Completed", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         }
                     });
                 }
             }
             catch { }
+        }
+
+        private void RemoveCardByTransactionNumber(FlowLayoutPanel panel, string transactionNumber)
+        {
+            if (panel == null) return;
+            for (int i = panel.Controls.Count - 1; i >= 0; i--)
+            {
+                if (panel.Controls[i] is Panel card && card.Tag is string orderNum && orderNum == transactionNumber)
+                {
+                    panel.Controls.Remove(card);
+                    card.Dispose();
+                    return;
+                }
+            }
         }
         private void LoadStockCache()
         {
@@ -361,9 +397,11 @@ namespace TenDegreesPOS_New
             };
 
             // Load Backlog (Oldest First)
+            // Load Backlog
             var todaysTransactions = dbService.GetAllTransactions()
-                .Where(t => t.TransactionDate.Date == DateTime.Today && t.Status == "Completed")
-                .OrderBy(t => t.TransactionDate) // FIFO Sort
+                .Where(t => t.TransactionDate.Date == DateTime.Today
+                         && t.Status == "Completed")
+                .OrderBy(t => t.TransactionDate)
                 .ToList();
 
             foreach (var tx in todaysTransactions)
@@ -371,13 +409,21 @@ namespace TenDegreesPOS_New
                 var netOrder = new NetworkOrder
                 {
                     TransactionNumber = tx.TransactionNumber,
-                    Items = tx.TransactionItems.Select(ti => new NetworkOrderItem
+                    Notes = tx.Notes ?? "",
+                    Items = new List<NetworkOrderItem>()
+                };
+
+                // Group add-ons under their parent (Heuristic: Add-ons are consecutive items with no Size)
+                foreach (var ti in tx.TransactionItems.OrderBy(t => t.Id))
+                {
+                    netOrder.Items.Add(new NetworkOrderItem
                     {
                         ProductName = ti.Product?.Name ?? "Unknown",
                         Size = ti.Size ?? "",
-                        Quantity = ti.Quantity
-                    }).ToList()
-                };
+                        Quantity = ti.Quantity,
+                        IsAddOn = string.IsNullOrEmpty(ti.Size)
+                    });
+                }
 
                 AddCardToCashierQueue(netOrder);
             }
@@ -400,28 +446,55 @@ namespace TenDegreesPOS_New
 
         private void AddCardToCashierQueue(NetworkOrder order)
         {
-            // Extract daily number
             string dailyNumber = "0";
             if (order.TransactionNumber.Length >= 4)
             {
                 string suffix = order.TransactionNumber.Substring(order.TransactionNumber.Length - 4);
-                if (int.TryParse(suffix, out int parsedNum))
-                {
-                    dailyNumber = parsedNum.ToString();
-                }
+                if (int.TryParse(suffix, out int parsedNum)) dailyNumber = parsedNum.ToString();
             }
 
-            Panel card = new Panel { Size = new Size(300, 180), BackColor = DeepSeekSurface, Margin = new Padding(10), Tag = order.TransactionNumber };
+            // Dynamically size the card based on items + notes
+            int itemCount = order.Items.Count;
+            int cardHeight = 120 + (itemCount * 18);
+            if (!string.IsNullOrEmpty(order.Notes)) cardHeight += 35; // Add space for notes
+
+            Panel card = new Panel { Size = new Size(300, cardHeight), BackColor = DeepSeekSurface, Margin = new Padding(10), Tag = order.TransactionNumber };
 
             Label lblOrderNo = new Label { Text = $"#{dailyNumber}", Font = new Font("Segoe UI", 12, FontStyle.Bold), ForeColor = DeepSeekText, Location = new Point(15, 15), AutoSize = true };
             Label lblStatus = new Label { Name = "lblStatus", Text = "WAITING", Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = DeepSeekWarning, Location = new Point(200, 18), AutoSize = true };
 
-            string itemsText = string.Join("\n", order.Items.ConvertAll(i => $"• {i.Quantity}x {i.ProductName} {i.Size}"));
-            Label lblItems = new Label { Text = itemsText, Font = new Font("Segoe UI", 10), ForeColor = DeepSeekTextMuted, Location = new Point(15, 50), Size = new Size(270, 110) };
+            int currentY = 45;
+
+            // Display Notes
+            if (!string.IsNullOrEmpty(order.Notes))
+            {
+                Label lblNotes = new Label { Text = $"📝 Note: {order.Notes}", Font = new Font("Segoe UI", 9, FontStyle.Italic), ForeColor = DeepSeekWarning, Location = new Point(15, currentY), Size = new Size(270, 35), AutoEllipsis = true };
+                card.Controls.Add(lblNotes);
+                currentY += 35;
+            }
+
+            // Build itemized text list
+            string itemsText = "";
+            foreach (var item in order.Items)
+            {
+                // ▼▼▼ FIX: Check if the item has a size ▼▼▼
+                bool isAddOn = string.IsNullOrEmpty(item.Size);
+
+                if (isAddOn)
+                {
+                    itemsText += $"      + {item.Quantity}x {item.ProductName}\n";
+                }
+                else
+                {
+                    itemsText += $"• {item.Quantity}x {item.ProductName} {item.Size}\n";
+                }
+                // ▲▲▲ END OF FIX ▲▲▲
+            }
+
+            Label lblItems = new Label { Text = itemsText.TrimEnd(), Font = new Font("Segoe UI", 10), ForeColor = DeepSeekTextMuted, Location = new Point(15, currentY), Size = new Size(270, cardHeight - currentY - 20) };
 
             card.Controls.AddRange(new Control[] { lblOrderNo, lblStatus, lblItems });
 
-            // Check if it's already in the preparing list
             if (preparingTransactions.Contains(order.TransactionNumber))
             {
                 lblStatus.Text = "PREPARING";
@@ -687,6 +760,68 @@ namespace TenDegreesPOS_New
                 BackColor = Color.Transparent
             };
 
+            // ▼▼▼ TOP 3 BEST SELLERS SECTION ▼▼▼
+            Panel pnlTop3 = new Panel
+            {
+                Location = new Point(15, 245), // Just above the "Products" label (which was at 245)
+                Size = new Size(1050, 80),
+                BackColor = Color.Transparent
+            };
+
+            Label lblTop3Title = new Label
+            {
+                Text = "🏆 Top 3 Best Sellers",
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                ForeColor = DeepSeekAccent,
+                Location = new Point(0, 0),
+                AutoSize = true
+            };
+            pnlTop3.Controls.Add(lblTop3Title);
+
+            var top3 = GetTop3BestSellers();
+
+            int cardX = 0;
+            foreach (var (name, qty) in top3)
+            {
+                Panel card = new Panel
+                {
+                    Location = new Point(cardX, 25),
+                    Size = new Size(240, 50),
+                    BackColor = DeepSeekSurface
+                };
+                card.Paint += (s, e) =>
+                {
+                    using (Pen pen = new Pen(DeepSeekBorder, 1))
+                        e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
+                };
+
+                Label lblName = new Label
+                {
+                    Text = name,
+                    Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                    ForeColor = DeepSeekText,
+                    Location = new Point(10, 6),
+                    Size = new Size(220, 20),
+                    AutoEllipsis = true
+                };
+
+                Label lblQty = new Label
+                {
+                    Text = $"{qty} sold",
+                    Font = new Font("Segoe UI", 9),
+                    ForeColor = DeepSeekSuccess,
+                    Location = new Point(10, 28),
+                    AutoSize = true
+                };
+
+                card.Controls.AddRange(new Control[] { lblName, lblQty });
+                pnlTop3.Controls.Add(card);
+                cardX += 255;
+            }
+
+            pnlLeft.Controls.Add(pnlTop3);
+            // ▲▲▲ END OF TOP 3 ▲▲▲
+
             Label lblSearch = new Label
             {
                 Text = "Search",
@@ -750,15 +885,15 @@ namespace TenDegreesPOS_New
                 Text = "Products",
                 Font = new Font("Segoe UI", 14, FontStyle.Bold),
                 ForeColor = DeepSeekText,
-                Location = new Point(15, 245),
+                Location = new Point(15, 335), // Was 245
                 AutoSize = true,
                 BackColor = Color.Transparent
             };
 
             flpProducts = new FlowLayoutPanel
             {
-                Location = new Point(15, 285),
-                Size = new Size(1050, 615),
+                Location = new Point(15, 375), // Was 285
+                Size = new Size(1050, 525),    // Reduce height slightly to fit (was 615)
                 AutoScroll = true,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
@@ -807,12 +942,13 @@ namespace TenDegreesPOS_New
                 BorderStyle = BorderStyle.None,
                 RowHeadersVisible = false,
                 AllowUserToAddRows = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, // Let it fill the space
                 Font = new Font("Segoe UI", 10),
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 ReadOnly = true,
                 GridColor = DeepSeekBorder,
-                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                RowTemplate = { Height = 35 }
             };
 
             dgvCart.EnableHeadersVisualStyles = false;
@@ -826,13 +962,64 @@ namespace TenDegreesPOS_New
             dgvCart.AlternatingRowsDefaultCellStyle.BackColor = DeepSeekTableRowAlt;
             dgvCart.AlternatingRowsDefaultCellStyle.ForeColor = DeepSeekText;
 
+            // Define columns
             dgvCart.Columns.Add("Name", "Name");
             dgvCart.Columns.Add("Size", "Size");
             dgvCart.Columns.Add("Quantity", "Qty");
             dgvCart.Columns.Add("Price", "Price");
             dgvCart.Columns.Add("Total", "Total");
 
+            // ▼▼▼ ADD MINUS AND PLUS BUTTON COLUMNS ▼▼▼
+            DataGridViewButtonColumn btnMinusCol = new DataGridViewButtonColumn
+            {
+                Name = "MinusBtn",
+                HeaderText = "",
+                Text = "-",
+                UseColumnTextForButtonValue = true,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnMinusCol.DefaultCellStyle.BackColor = DeepSeekDanger;
+            btnMinusCol.DefaultCellStyle.ForeColor = DeepSeekText;
+            btnMinusCol.DefaultCellStyle.SelectionBackColor = Color.FromArgb(220, 50, 50);
+
+            DataGridViewButtonColumn btnPlusCol = new DataGridViewButtonColumn
+            {
+                Name = "PlusBtn",
+                HeaderText = "",
+                Text = "+",
+                UseColumnTextForButtonValue = true,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnPlusCol.DefaultCellStyle.BackColor = DeepSeekSuccess;
+            btnPlusCol.DefaultCellStyle.ForeColor = DeepSeekText;
+            btnPlusCol.DefaultCellStyle.SelectionBackColor = Color.FromArgb(10, 150, 100);
+
+            dgvCart.Columns.Add(btnMinusCol);
+            dgvCart.Columns.Add(btnPlusCol);
+            // ▲▲▲ END OF ADDITION ▲▲▲
+
+            // Set fill weights so all columns share the width proportionally
+            dgvCart.Columns["Name"].FillWeight = 35;
+            dgvCart.Columns["Size"].FillWeight = 10;
+            dgvCart.Columns["Quantity"].FillWeight = 8;
+            dgvCart.Columns["Price"].FillWeight = 15;
+            dgvCart.Columns["Total"].FillWeight = 15;
+            dgvCart.Columns["MinusBtn"].FillWeight = 6;
+            dgvCart.Columns["PlusBtn"].FillWeight = 6;
+
+            // Alignment
+            dgvCart.Columns["Price"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+            dgvCart.Columns["Total"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
+            dgvCart.Columns["Quantity"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+
+            // Disable sorting so clicks don't reorder
+            foreach (DataGridViewColumn col in dgvCart.Columns)
+            {
+                col.SortMode = DataGridViewColumnSortMode.NotSortable;
+            }
+
             dgvCart.SelectionChanged += DgvCart_SelectionChanged!;
+            dgvCart.CellClick += DgvCart_CellClick!;
 
             // ========== QUANTITY EDIT PANEL ==========
             Panel pnlQtyEdit = new Panel
@@ -1055,7 +1242,7 @@ namespace TenDegreesPOS_New
             btnPrintBill = new Button
             {
                 Text = "Print Bill",
-                Location = new Point(15, 685),
+                Location = new Point(15, 715),
                 Size = new Size(150, 45),
                 BackColor = DeepSeekInfo,
                 ForeColor = DeepSeekText,
@@ -1104,10 +1291,39 @@ namespace TenDegreesPOS_New
             };
             btnPayHybrid.Click += BtnPayHybrid_Click!;
 
+
+
+            // ▼▼▼ ADD ORDER NOTES INPUT ▼▼▼
+            Label lblNotes = new Label
+            {
+                Text = "Order Notes:",
+                Location = new Point(15, 775),
+                AutoSize = true,
+                ForeColor = DeepSeekTextMuted,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold)
+            };
+
+            TextBox txtOrderNotes = new TextBox
+            {
+                Location = new Point(115, 772),
+                Size = new Size(480, 28),
+                BackColor = DeepSeekSurface,
+                ForeColor = DeepSeekText,
+                BorderStyle = BorderStyle.FixedSingle,
+                PlaceholderText = "e.g., Less ice, extra hot..."
+            };
+            txtOrderNotes.TextChanged += (s, e) => { currentOrderNotes = txtOrderNotes.Text; };
+
+            pnlRight.Controls.Add(lblNotes);
+            pnlRight.Controls.Add(txtOrderNotes);
+            // ▲▲▲ END OF FIX ▲▲▲
+
+            // Add lblNotes and txtOrderNotes to pnlRight.Controls.AddRange
+
             // DISCOUNT PANEL
             pnlDiscount = new Panel
             {
-                Location = new Point(15, 740),
+                Location = new Point(15, 660), // Moved up from 740
                 Size = new Size(580, 45),
                 BackColor = DeepSeekSurface,
                 BorderStyle = BorderStyle.None
@@ -1197,13 +1413,71 @@ namespace TenDegreesPOS_New
             pnlRight.Controls.AddRange(new Control[] {
                 lblCartTitle, dgvCart, pnlQtyEdit,
                 btnRemoveItem, btnClearCart,
-                pnlTotals, btnPrintBill, btnPayCash, btnPayGCash, btnPayHybrid, pnlDiscount
+                pnlTotals,
+                pnlDiscount,               // Added
+                btnPrintBill, btnPayCash, btnPayGCash, btnPayHybrid,
+                lblNotes, txtOrderNotes   
             });
 
             splitContainer.Panel1.Controls.Add(pnlLeft);
             splitContainer.Panel2.Controls.Add(pnlRight);
 
             pnlContent.Controls.Add(splitContainer);
+
+            RefreshCart();
+        }
+
+        private List<(string Name, int Qty)> GetTop3BestSellers()
+        {
+            var result = new List<(string Name, int Qty)>();
+
+            try
+            {
+                var transactions = dbService.GetAllTransactions()
+                    .Where(t => t.Status == "Completed")
+                    .ToList();
+
+                if (!transactions.Any()) return result;
+
+                var productSales = new Dictionary<int, (string Name, int Quantity)>();
+
+                foreach (var transaction in transactions)
+                {
+                    if (transaction.TransactionItems == null) continue;
+
+                    foreach (var item in transaction.TransactionItems)
+                    {
+                        string productName = item.Product?.Name ?? "Unknown";
+                        if (productName == "Unknown" && item.ProductId > 0)
+                        {
+                            var product = dbService.GetProductById(item.ProductId);
+                            productName = product?.Name ?? $"Product #{item.ProductId}";
+                        }
+
+                        if (productSales.ContainsKey(item.ProductId))
+                        {
+                            var existing = productSales[item.ProductId];
+                            productSales[item.ProductId] = (productName, existing.Quantity + item.Quantity);
+                        }
+                        else
+                        {
+                            productSales[item.ProductId] = (productName, item.Quantity);
+                        }
+                    }
+                }
+
+                result = productSales.Values
+                    .OrderByDescending(p => p.Quantity)
+                    .Take(3)
+                    .Select(p => (p.Name, p.Quantity))
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error getting top 3 best sellers: {ex.Message}");
+            }
+
+            return result;
         }
 
         private void ApplyQuantityUpdate()
@@ -1347,6 +1621,111 @@ namespace TenDegreesPOS_New
 
                 if (categoryFilter != "All Categories" && categoryFilter != null && product.Category?.Name != categoryFilter)
                     continue;
+
+                // ============================================================
+                //  EXTRAS / ADD-ONS CATEGORY HANDLING
+                // ============================================================
+                if (product.Category?.Name == "Extras/Add-ons")
+                {
+                    Panel extraCard = new Panel
+                    {
+                        Size = new Size(210, 140),
+                        BackColor = DeepSeekCard,
+                        Margin = new Padding(10),
+                        Tag = product
+                    };
+                    extraCard.Paint += (s, e) =>
+                    {
+                        using (Pen pen = new Pen(DeepSeekBorder, 1))
+                            e.Graphics.DrawRectangle(pen, 0, 0, extraCard.Width - 1, extraCard.Height - 1);
+                        using (Pen accentPen = new Pen(DeepSeekWarning, 2))
+                            e.Graphics.DrawLine(accentPen, 0, 0, extraCard.Width, 0);
+                    };
+
+                    // ▼▼▼ RENAMED from lblName to lblExtraName ▼▼▼
+                    Label lblExtraName = new Label
+                    {
+                        Text = product.Name,
+                        Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                        ForeColor = DeepSeekText,
+                        Location = new Point(10, 15),
+                        Size = new Size(190, 40),
+                        AutoEllipsis = true
+                    };
+
+                    Label lblExtraPrice = new Label
+                    {
+                        Text = $"₱{product.Price:N2}",
+                        Font = new Font("Segoe UI", 14, FontStyle.Bold),
+                        ForeColor = DeepSeekSuccess,
+                        Location = new Point(10, 55),
+                        AutoSize = true
+                    };
+
+                    Label lblHint = new Label
+                    {
+                        Text = "Click an item in cart first, then add.",
+                        Font = new Font("Segoe UI", 8, FontStyle.Italic),
+                        ForeColor = DeepSeekTextMuted,
+                        Location = new Point(10, 80),
+                        Size = new Size(190, 20)
+                    };
+
+                    Button btnAddExtra = new Button
+                    {
+                        Text = "+ Add to Selected",
+                        Size = new Size(190, 30),
+                        Location = new Point(10, 105),
+                        BackColor = DeepSeekWarning,
+                        ForeColor = Color.Black,
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                        FlatAppearance = { BorderSize = 0 },
+                        Cursor = Cursors.Hand
+                    };
+
+                    btnAddExtra.Click += (s, ev) =>
+                    {
+                        if (dgvCart.CurrentRow == null || cartItems.Count == 0)
+                        {
+                            MessageBox.Show("Please click on an item in the cart first, then add the extra.", "Select Item", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+
+                        int index = dgvCart.CurrentRow.Index;
+                        if (index >= 0 && index < cartItems.Count)
+                        {
+                            var cartItem = cartItems[index];
+
+                            var existingExtra = cartItem.AddOns.FirstOrDefault(a => a.ProductId == product.Id);
+                            if (existingExtra != null)
+                            {
+                                existingExtra.Quantity++;
+                            }
+                            else
+                            {
+                                cartItem.AddOns.Add(new CartItem
+                                {
+                                    ProductId = product.Id,
+                                    Name = product.Name,
+                                    Quantity = 1,
+                                    Price = product.Price
+                                });
+                            }
+
+                            RefreshCart();
+                        }
+                    };
+
+                    // Use the renamed variables here
+                    extraCard.Controls.AddRange(new Control[] { lblExtraName, lblExtraPrice, lblHint, btnAddExtra });
+                    flpProducts.Controls.Add(extraCard);
+                    continue; // Skip the normal card layout for extras
+                }
+
+                // ============================================================
+                //  NORMAL PRODUCTS
+                // ============================================================
 
                 string? cardSizeForAvailability = product.HasSizes ? "Small" : null;
 
@@ -1850,20 +2229,54 @@ namespace TenDegreesPOS_New
 
             foreach (var item in cartItems)
             {
-                decimal total = item.Price * item.Quantity;
+                decimal total = item.TotalPrice;
                 displaySubtotal += total;
 
+                // 1. Add the Main Item
                 int rowIndex = dgvCart.Rows.Add(
                     item.Name,
                     item.Size ?? "-",
                     item.Quantity,
                     $"₱{item.Price:N2}",
-                    $"₱{total:N2}"
+                    $"₱{total:N2}",
+                    "-",
+                    "+"
                 );
+
+                // ▼▼▼ CRITICAL: Store the cart item so clicks know what to update ▼▼▼
+                dgvCart.Rows[rowIndex].Tag = item;
+                dgvCart.Rows[rowIndex].Cells["Name"].Tag = "MAIN"; // marker for main item
+                // ▲▲▲ END OF FIX ▲▲▲
 
                 if (!string.IsNullOrEmpty(item.Size))
                 {
                     dgvCart.Rows[rowIndex].Cells["Size"].Style.ForeColor = DeepSeekAccent;
+                }
+
+                // 2. Add the Add-ons
+                foreach (var addon in item.AddOns)
+                {
+                    string addonName = $"      + {addon.Name}";
+
+                    int addonIndex = dgvCart.Rows.Add(
+                        addonName,
+                        "",
+                        addon.Quantity,
+                        "",
+                        "",
+                        "-",
+                        "+"
+                    );
+
+                    // ▼▼▼ CRITICAL: Store add-on and its parent so clicks work ▼▼▼
+                    dgvCart.Rows[addonIndex].Tag = (addon, item); // tuple: (addon, parent)
+                    dgvCart.Rows[addonIndex].Cells["Name"].Tag = "ADDON";
+                    // ▲▲▲ END OF FIX ▲▲▲
+
+                    dgvCart.Rows[addonIndex].DefaultCellStyle.ForeColor = DeepSeekTextMuted;
+                    dgvCart.Rows[addonIndex].DefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Italic);
+                    dgvCart.Rows[addonIndex].DefaultCellStyle.BackColor = Color.FromArgb(28, 30, 34);
+                    dgvCart.Rows[addonIndex].Cells["Name"].Style.ForeColor = DeepSeekWarning;
                 }
             }
 
@@ -1878,12 +2291,98 @@ namespace TenDegreesPOS_New
             RefreshProductAvailabilityLabels();
         }
 
+        private void DgvCart_CellClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0) return;
+
+            // Only respond to the +/- button columns
+            string columnName = dgvCart.Columns[e.ColumnIndex].Name;
+            if (columnName != "PlusBtn" && columnName != "MinusBtn") return;
+
+            var row = dgvCart.Rows[e.RowIndex];
+            if (row.Tag == null) return;
+
+            // What kind of row is this?
+            string rowType = row.Cells["Name"].Tag as string ?? "";
+            bool isAddOn = rowType == "ADDON";
+            bool isMainItem = rowType == "MAIN";
+
+            // ============ ADD-ON CLICK ============
+            if (isAddOn)
+            {
+                // Tag is a tuple (addon, parent)
+                var tag = ((CartItem addon, CartItem parent))row.Tag;
+
+                if (columnName == "PlusBtn")
+                {
+                    tag.addon.Quantity++;
+                }
+                else if (columnName == "MinusBtn")
+                {
+                    tag.addon.Quantity--;
+                    if (tag.addon.Quantity <= 0)
+                    {
+                        tag.parent.AddOns.Remove(tag.addon);
+                    }
+                }
+            }
+            // ============ MAIN ITEM CLICK ============
+            else if (isMainItem)
+            {
+                var item = row.Tag as CartItem;
+                if (item == null) return;
+
+                var product = dbService.GetProductById(item.ProductId);
+                if (product == null) return;
+
+                if (columnName == "PlusBtn")
+                {
+                    // Check stock before adding
+                    int oldQty = item.Quantity;
+                    item.Quantity = 0;
+                    bool ok = CheckProductAvailability(product, oldQty + 1, item.Size, out string? msg);
+                    item.Quantity = oldQty;
+
+                    if (ok)
+                    {
+                        item.Quantity++;
+                    }
+                    else
+                    {
+                        MessageBox.Show(msg, "Insufficient Stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+                else if (columnName == "MinusBtn")
+                {
+                    item.Quantity--;
+                    if (item.Quantity <= 0)
+                    {
+                        cartItems.Remove(item);
+                    }
+                }
+            }
+            else
+            {
+                return;
+            }
+
+            // Re-render cart
+            RefreshCart();
+
+            // Try to restore selection to a nearby row
+            if (e.RowIndex < dgvCart.Rows.Count)
+            {
+                dgvCart.ClearSelection();
+                dgvCart.Rows[e.RowIndex].Selected = true;
+            }
+        }
+
         private void UpdateTotals()
         {
             if (lblSubTotal == null || lblTax == null || lblDiscount == null || lblTotal == null) return;
 
-            // 1. The cart sum is now the TOTAL (VAT Inclusive)
-            decimal total = cartItems.Sum(item => item.Price * item.Quantity) - currentDiscountAmount;
+            // 1. The cart sum (including Add-ons) is the TOTAL (VAT Inclusive)
+            decimal total = cartItems.Sum(item => item.TotalPrice) - currentDiscountAmount;
 
             // 2. Tax is exactly 12% of the Total
             decimal taxRate = 0.12m;
@@ -1936,7 +2435,7 @@ namespace TenDegreesPOS_New
                 decimal discountAmount = currentDiscountAmount;
 
                 // 1. Cart sum is the TOTAL
-                decimal grossTotal = cartItems.Sum(item => item.Price * item.Quantity);
+                decimal grossTotal = cartItems.Sum(item => item.TotalPrice);
                 decimal total = grossTotal - currentDiscountAmount;
 
                 // 2. Tax is 12% of the Total
@@ -2147,15 +2646,24 @@ namespace TenDegreesPOS_New
                             Change = change,
                             CashPortion = paymentMethod == "Cash" ? amountPaid : 0,
                             GcashPortion = paymentMethod == "GCash" ? total : 0,
-                            GcashReferenceNumber = refNum
+                            GcashReferenceNumber = refNum,
+                            Notes = currentOrderNotes // <-- ADD THIS
                         };
 
-                        var items = cartItems.Select(item => (
-                            productId: item.ProductId,
-                            quantity: item.Quantity,
-                            unitPrice: item.Price,
-                            size: item.Size
-                        )).ToList();
+                        var items = new List<(int productId, int quantity, decimal unitPrice, string? size)>();
+
+                        foreach (var item in cartItems)
+                        {
+                            // 1. Add the main product (default to "Regular" if no size)
+                            string mainSize = string.IsNullOrEmpty(item.Size) ? "Regular" : item.Size;
+                            items.Add((item.ProductId, item.Quantity, item.Price, mainSize));
+
+                            // 2. Add each extra as a separate line item (no size, so it's identified as add-on)
+                            foreach (var addon in item.AddOns)
+                            {
+                                items.Add((addon.ProductId, addon.Quantity, addon.Price, null));
+                            }
+                        }
 
                         var savedTransaction = dbService.CreateTransaction(transaction, items);
 
@@ -2164,13 +2672,21 @@ namespace TenDegreesPOS_New
                         {
                             TransactionNumber = savedTransaction.TransactionNumber,
                             MessageType = "NEW_ORDER",
-                            Items = savedTransaction.TransactionItems.Select(ti => new NetworkOrderItem
+                            Notes = savedTransaction.Notes ?? "", // <-- Get from DB
+                            Items = new List<NetworkOrderItem>()
+                        };
+
+                        // Group add-ons under their parent products
+                        foreach (var ti in savedTransaction.TransactionItems.OrderBy(t => t.Id))
+                        {
+                            networkOrder.Items.Add(new NetworkOrderItem
                             {
                                 ProductName = ti.Product?.Name ?? "Unknown",
                                 Size = ti.Size ?? "",
-                                Quantity = ti.Quantity
-                            }).ToList()
-                        };
+                                Quantity = ti.Quantity,
+                                IsAddOn = string.IsNullOrEmpty(ti.Size) // Add-ons have no size
+                            });
+                        }
                         _tcpServer.BroadcastOrder(networkOrder);
                         // Update the Cashier's own UI if they have the Queue tab open
                         HandleCashierNetworkMessage(networkOrder);
@@ -2251,10 +2767,10 @@ namespace TenDegreesPOS_New
 
             try
             {
-                decimal subTotal = cartItems.Sum(item => item.Price * item.Quantity);
+                decimal subTotal = cartItems.Sum(item => item.TotalPrice); 
                 decimal discountAmount = currentDiscountAmount;
                 decimal discountedSubTotal = subTotal - discountAmount;
-                decimal tax = discountedSubTotal * 0.12m / 1.12m;
+                decimal tax = discountedSubTotal * 0.12m;
                 decimal total = discountedSubTotal;
 
                 using (Form dlg = new Form())
@@ -2545,12 +3061,19 @@ namespace TenDegreesPOS_New
                             GcashReferenceNumber = refNum
                         };
 
-                        var items = cartItems.Select(item => (
-                            productId: item.ProductId,
-                            quantity: item.Quantity,
-                            unitPrice: item.Price,
-                            size: item.Size
-                        )).ToList();
+                        var items = new List<(int productId, int quantity, decimal unitPrice, string? size)>();
+
+                        foreach (var item in cartItems)
+                        {
+                            // 1. Add the main product
+                            items.Add((item.ProductId, item.Quantity, item.Price, item.Size));
+
+                            // 2. Add each extra as a separate line item
+                            foreach (var addon in item.AddOns)
+                            {
+                                items.Add((addon.ProductId, addon.Quantity, addon.Price, null));
+                            }
+                        }
 
                         var savedTransaction = dbService.CreateTransaction(transaction, items);
 
@@ -2609,189 +3132,246 @@ namespace TenDegreesPOS_New
                 PdfDocument document = new PdfDocument();
                 document.Info.Title = $"Receipt_{transaction.TransactionNumber}";
 
-                PdfPage page = document.AddPage();
-                page.Width = 500;
-                page.Height = 700;
+                // Define fonts
+                XFont fontOrderNo = new XFont("Arial", 16, XFontStyleEx.Bold);
+                XFont fontDate = new XFont("Arial", 8, XFontStyleEx.Regular);
+                XFont fontTypeHeader = new XFont("Arial", 12, XFontStyleEx.Bold);
+                XFont fontItemLarge = new XFont("Arial", 12, XFontStyleEx.Bold);
+                XFont fontStoreHeader = new XFont("Arial", 14, XFontStyleEx.Bold);
+                XFont fontNormal = new XFont("Arial", 9, XFontStyleEx.Regular);
+                XFont fontBold = new XFont("Arial", 10, XFontStyleEx.Bold);
+                XFont fontTotal = new XFont("Arial", 14, XFontStyleEx.Bold);
+                XFont fontSmall = new XFont("Arial", 8, XFontStyleEx.Regular);
+                XFont fontThanks = new XFont("Arial", 9, XFontStyleEx.Bold);
 
+                // ------------------------------------------------
+                // STEP 1: CALCULATE REQUIRED HEIGHT
+                // ------------------------------------------------
+                double neededHeight = 50; // Start padding
+                neededHeight += 25; // Order Number
+                neededHeight += 20; // Date + Owner
+                neededHeight += 15; // Separator
+                neededHeight += 20; // Dine In header
+
+                // Large summary items (exclude add-ons)
+                var largeItems = items.Where(i => !(i.Product?.Name?.Contains("+") == true) &&
+                                                 !(string.IsNullOrEmpty(i.Size) && i.UnitPrice < 50)).ToList();
+                neededHeight += largeItems.Count * 18;
+                neededHeight += 20; // Padding after summary
+                neededHeight += 15; // Separator
+                neededHeight += 20; // Logo margin
+
+                // Logo (Fixed size)
+                neededHeight += 70; // assume 70x70 max
+                neededHeight += 10; // Spacing
+
+                neededHeight += 18; // Store Header
+                neededHeight += 24; // Address lines
+                neededHeight += 20; // Spacing
+                neededHeight += 36; // Transaction details (Order, Employee, POS)
+                neededHeight += 20; // Spacing
+                neededHeight += 15; // Separator
+                neededHeight += 20; // Dine In header
+
+                // Detailed items
+                neededHeight += items.Count * 30; // Name + Price + Qty line
+
+                neededHeight += 20; // Spacing
+                neededHeight += 15; // Separator
+                neededHeight += 25; // Total
+                neededHeight += 15; // Cash
+                neededHeight += 15; // Change
+                neededHeight += 25; // Spacing
+                neededHeight += 15; // Separator
+                neededHeight += 12 * 4; // Footer lines
+                neededHeight += 10;
+                neededHeight += 12; // Acknowledge
+                neededHeight += 12; // Thank you
+                neededHeight += 40; // Bottom padding
+
+                // Create Page with calculated height
+                PdfPage page = document.AddPage();
+                page.Width = 226;
+                page.Height = neededHeight;
+
+                // ------------------------------------------------
+                // STEP 2: DRAW ON THE PAGE
+                // ------------------------------------------------
                 using (XGraphics gfx = XGraphics.FromPdfPage(page))
                 {
-                    XFont fontTitle = new XFont("Arial", 20);
-                    XFont fontSubTitle = new XFont("Arial", 14);
-                    XFont fontHeader = new XFont("Arial", 13);
-                    XFont fontNormal = new XFont("Arial", 12);
-                    XFont fontBold = new XFont("Arial", 13);
-                    XFont fontSmall = new XFont("Arial", 10);
-
-                    XPen penLine = new XPen(XColors.Black, 1);
-                    XPen penDoubleLine = new XPen(XColors.Black, 2);
+                    XPen penDotted = new XPen(XColors.Black, 1) { DashStyle = XDashStyle.Dot };
                     XBrush brushBlack = new XSolidBrush(XColors.Black);
+                    XBrush brushGray = new XSolidBrush(XColors.DarkGray);
 
-                    double yPos = 30 + (page.Height * 0.10);
+                    double yPos = 50;
                     double centerX = page.Width / 2;
-                    double leftMargin = 30;
-                    double rightCol = page.Width - 30;
+                    double leftMargin = 15;
+                    double rightCol = page.Width - 15;
 
-                    string storeName = "TEN DEGREES CAFE";
-                    double storeNameWidth = gfx.MeasureString(storeName, fontTitle).Width;
-                    gfx.DrawString(storeName, fontTitle, brushBlack, new XPoint(centerX - storeNameWidth / 2, yPos));
-                    yPos += 32;
+                    // 1. Order Number
+                    string orderNo = $"#{transaction.TransactionNumber.Split('-').Last()}";
+                    double orderWidth = gfx.MeasureString(orderNo, fontOrderNo).Width;
+                    gfx.DrawString(orderNo, fontOrderNo, brushBlack, new XPoint(centerX - orderWidth / 2, yPos));
+                    yPos += 25;
 
-                    string address = "Commonwealth Avenue, Quezon City";
-                    double addressWidth = gfx.MeasureString(address, fontSubTitle).Width;
-                    gfx.DrawString(address, fontSubTitle, brushBlack, new XPoint(centerX - addressWidth / 2, yPos));
-                    yPos += 24;
-
-                    string tin = "VAT REG TIN# 123-456-789-00012";
-                    double tinWidth = gfx.MeasureString(tin, fontSubTitle).Width;
-                    gfx.DrawString(tin, fontSubTitle, brushBlack, new XPoint(centerX - tinWidth / 2, yPos));
-                    yPos += 24;
-
-                    gfx.DrawLine(penDoubleLine, 30, yPos, page.Width - 30, yPos);
-                    yPos += 18;
-
-                    gfx.DrawString("SALES INVOICE", fontHeader, brushBlack, new XPoint(leftMargin, yPos));
-                    gfx.DrawString($"SI # {transaction.TransactionNumber}", fontNormal, brushBlack, new XPoint(350, yPos));
-                    yPos += 28;
-
-                    gfx.DrawString($"Date: {transaction.TransactionDate:MMMM dd, yyyy HH:mm}", fontNormal, brushBlack, new XPoint(leftMargin, yPos));
-                    gfx.DrawString($"Cashier: {userName}", fontNormal, brushBlack, new XPoint(350, yPos));
-                    yPos += 24;
-
-                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
-                    yPos += 16;
-
-                    gfx.DrawString("Item", fontBold, brushBlack, new XPoint(leftMargin, yPos));
-                    gfx.DrawString("Qty", fontBold, brushBlack, new XPoint(280, yPos));
-                    gfx.DrawString("Price", fontBold, brushBlack, new XPoint(350, yPos));
-                    gfx.DrawString("Total", fontBold, brushBlack, new XPoint(440, yPos));
-                    yPos += 24;
-
-                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    // 2. Date & Cashier
+                    gfx.DrawString($"{transaction.TransactionDate:MM/dd/yy h:mm tt}", fontDate, brushBlack, new XPoint(leftMargin, yPos));
                     yPos += 12;
-
-                    foreach (var item in items)
-                    {
-                        string itemName = item.Product?.Name ?? "Unknown Product";
-                        string sizeInfo = string.IsNullOrEmpty(item.Size) ? "" : $" ({item.Size})";
-                        string fullName = $"{itemName}{sizeInfo}";
-
-                        if (fullName.Length > 35)
-                            fullName = fullName.Substring(0, 32) + "...";
-
-                        gfx.DrawString(fullName, fontNormal, brushBlack, new XPoint(leftMargin, yPos));
-                        gfx.DrawString($"{item.Quantity}", fontNormal, brushBlack, new XPoint(290, yPos));
-                        gfx.DrawString($"₱{item.UnitPrice:N2}", fontNormal, brushBlack, new XPoint(350, yPos));
-                        gfx.DrawString($"₱{item.TotalPrice:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 24;
-                    }
-
-                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
-                    yPos += 16;
-
-                    gfx.DrawString("Subtotal:", fontNormal, brushBlack, new XPoint(280, yPos));
-                    gfx.DrawString($"₱{transaction.SubTotal:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                    yPos += 24;
-
-                    if (transaction.Discount > 0)
-                    {
-                        gfx.DrawString("Discount:", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"-₱{transaction.Discount:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 24;
-                    }
-
-                    gfx.DrawString("VAT (12%):", fontNormal, brushBlack, new XPoint(280, yPos));
-                    gfx.DrawString($"₱{transaction.Tax:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                    yPos += 24;
-
-                    gfx.DrawLine(penDoubleLine, leftMargin, yPos, page.Width - leftMargin, yPos);
-                    yPos += 16;
-
-                    gfx.DrawString("TOTAL DUE", fontBold, brushBlack, new XPoint(280, yPos));
-                    gfx.DrawString($"₱{transaction.Total:N2}", fontBold, brushBlack, new XPoint(440, yPos));
-                    yPos += 30;
-
-                    // Payment section — varies by method
-                    if (transaction.PaymentMethod == "Hybrid")
-                    {
-                        gfx.DrawString("Payment (Hybrid)", fontBold, brushBlack, new XPoint(leftMargin, yPos));
-                        yPos += 22;
-
-                        gfx.DrawString("  Cash:", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.CashPortion:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 22;
-
-                        gfx.DrawString("  GCash:", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.GcashPortion:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 22;
-
-                        if (!string.IsNullOrEmpty(transaction.GcashReferenceNumber))
-                        {
-                            gfx.DrawString("    Ref #:", fontSmall, brushBlack, new XPoint(280, yPos));
-                            gfx.DrawString(transaction.GcashReferenceNumber, fontSmall, brushBlack, new XPoint(440, yPos));
-                            yPos += 22;
-                        }
-
-                        gfx.DrawString("Change:", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.Change:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 24;
-                    }
-                    else if (transaction.PaymentMethod == "GCash")
-                    {
-                        gfx.DrawString("Payment (GCash):", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.AmountPaid:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 22;
-
-                        if (!string.IsNullOrEmpty(transaction.GcashReferenceNumber))
-                        {
-                            gfx.DrawString("  Ref #:", fontNormal, brushBlack, new XPoint(280, yPos));
-                            gfx.DrawString(transaction.GcashReferenceNumber, fontNormal, brushBlack, new XPoint(440, yPos));
-                            yPos += 22;
-                        }
-
-                        gfx.DrawString("Change:", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.Change:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 24;
-                    }
-                    else
-                    {
-                        gfx.DrawString($"Payment ({transaction.PaymentMethod}):", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.AmountPaid:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 24;
-
-                        gfx.DrawString("Change:", fontNormal, brushBlack, new XPoint(280, yPos));
-                        gfx.DrawString($"₱{transaction.Change:N2}", fontNormal, brushBlack, new XPoint(440, yPos));
-                        yPos += 24;
-                    }
-
-                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
+                    gfx.DrawString($"Owner, Ten Degrees POS", fontDate, brushBlack, new XPoint(leftMargin, yPos));
                     yPos += 20;
 
-                    string itemCount = $"{items.Count} Item(s)";
-                    double itemCountWidth = gfx.MeasureString(itemCount, fontNormal).Width;
-                    gfx.DrawString(itemCount, fontNormal, brushBlack, new XPoint(centerX - itemCountWidth / 2, yPos));
-                    yPos += 28;
+                    gfx.DrawLine(penDotted, leftMargin, yPos, rightCol, yPos);
+                    yPos += 15;
 
-                    string thankYou = "Thank you for your purchase!";
-                    double thankYouWidth = gfx.MeasureString(thankYou, fontBold).Width;
-                    gfx.DrawString(thankYou, fontBold, brushBlack, new XPoint(centerX - thankYouWidth / 2, yPos));
-                    yPos += 26;
+                    // 3. Dine In
+                    string dineInText = "Dine In";
+                    gfx.DrawString(dineInText, fontTypeHeader, brushBlack, new XPoint(centerX - gfx.MeasureString(dineInText, fontTypeHeader).Width / 2, yPos));
+                    yPos += 20;
 
-                    string comeAgain = "Come again!";
-                    double comeAgainWidth = gfx.MeasureString(comeAgain, fontNormal).Width;
-                    gfx.DrawString(comeAgain, fontNormal, brushBlack, new XPoint(centerX - comeAgainWidth / 2, yPos));
-                    yPos += 24;
+                    // 4. Large Summary Items
+                    foreach (var item in largeItems)
+                    {
+                        string displayName = item.Product?.Name ?? "Unknown";
+                        gfx.DrawString($"{item.Quantity} x {displayName}", fontItemLarge, brushBlack, new XPoint(leftMargin, yPos));
+                        yPos += 18;
+                    }
 
-                    gfx.DrawLine(penLine, leftMargin, yPos, page.Width - leftMargin, yPos);
-                    yPos += 14;
+                    yPos += 10;
+                    gfx.DrawLine(penDotted, leftMargin, yPos, rightCol, yPos);
+                    yPos += 20;
 
-                    string footer = "This is a system-generated receipt";
-                    double footerWidth = gfx.MeasureString(footer, fontSmall).Width;
-                    gfx.DrawString(footer, fontSmall, brushBlack, new XPoint(centerX - footerWidth / 2, yPos));
-                    yPos += 22;
+                    // 5. Logo
+                    try
+                    {
+                        string[] possiblePaths = {
+                            Path.Combine(Application.StartupPath, "Resources", "logo.png"),
+                            Path.Combine(Application.StartupPath, "Resources", "logo.jpg"),
+                            Path.Combine(Application.StartupPath, "logo.png"),
+                            Path.Combine(Application.StartupPath, "logo.jpg")
+                        };
 
-                    page.Height = yPos + 30;
+                        string? logoPath = possiblePaths.FirstOrDefault(File.Exists);
+                        if (logoPath != null)
+                        {
+                            XImage logo = XImage.FromFile(logoPath);
+                            double logoWidth = 70;
+                            double logoHeight = (logo.PixelHeight * logoWidth) / logo.PixelWidth;
+
+                            gfx.DrawImage(logo, centerX - (logoWidth / 2), yPos, logoWidth, logoHeight);
+                            yPos += logoHeight + 10;
+                        }
+                        else
+                        {
+                            yPos += 70; // If no logo, skip the space
+                        }
+                    }
+                    catch
+                    {
+                        yPos += 70;
+                    }
+
+                    // 6. Store Details
+                    gfx.DrawString("TEN DEGREES", fontStoreHeader, brushBlack, new XPoint(centerX - gfx.MeasureString("TEN DEGREES", fontStoreHeader).Width / 2, yPos));
+                    yPos += 18;
+
+                    string addrLine1 = "Cotabato Street, Brgy. Batasan Hills,";
+                    string addrLine2 = "Quezon City, Metro Manila, 1121";
+                    gfx.DrawString(addrLine1, fontNormal, brushBlack, new XPoint(centerX - gfx.MeasureString(addrLine1, fontNormal).Width / 2, yPos));
+                    yPos += 12;
+                    gfx.DrawString(addrLine2, fontNormal, brushBlack, new XPoint(centerX - gfx.MeasureString(addrLine2, fontNormal).Width / 2, yPos));
+                    yPos += 20;
+
+                    // 7. Transaction Details
+                    gfx.DrawString($"Order: {transaction.TransactionNumber.Split('-').Last()}", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 12;
+                    gfx.DrawString($"Employee: Owner", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 12;
+                    gfx.DrawString($"POS: Ten Degrees POS", fontNormal, brushBlack, new XPoint(leftMargin, yPos)); yPos += 20;
+
+                    gfx.DrawLine(penDotted, leftMargin, yPos, rightCol, yPos);
+                    yPos += 15;
+
+                    // 8. Dine In (Again)
+                    gfx.DrawString("Dine In", fontBold, brushBlack, new XPoint(leftMargin, yPos));
+                    yPos += 20;
+
+                    // 9. Detailed Items
+                    foreach (var item in items)
+                    {
+                        string itemName = item.Product?.Name ?? "Unknown";
+                        string sizeInfo = string.IsNullOrEmpty(item.Size) ? "" : $" ({item.Size})";
+
+                        bool isAddOn = itemName.StartsWith("+") || (string.IsNullOrEmpty(item.Size) && item.UnitPrice < 50);
+                        if (isAddOn) itemName = $"   + {itemName}";
+
+                        // Name
+                        gfx.DrawString(itemName, fontNormal, brushBlack, new XPoint(leftMargin, yPos));
+
+                        // Price
+                        string priceStr = $"₱{item.TotalPrice:N2}";
+                        double priceWidth = gfx.MeasureString(priceStr, fontNormal).Width;
+                        gfx.DrawString(priceStr, fontNormal, brushBlack, new XPoint(rightCol - priceWidth, yPos));
+
+                        yPos += 14;
+
+                        // Qty x Price
+                        gfx.DrawString($"{item.Quantity} x ₱{item.UnitPrice:N2}", fontSmall, brushGray, new XPoint(leftMargin, yPos));
+                        yPos += 16;
+                    }
+
+                    yPos += 5;
+                    gfx.DrawLine(penDotted, leftMargin, yPos, rightCol, yPos);
+                    yPos += 15;
+
+                    // 10. Totals
+                    gfx.DrawString("Total", fontTotal, brushBlack, new XPoint(leftMargin, yPos));
+                    string totalStr = $"₱{transaction.Total:N2}";
+                    double totalWidth = gfx.MeasureString(totalStr, fontTotal).Width;
+                    gfx.DrawString(totalStr, fontTotal, brushBlack, new XPoint(rightCol - totalWidth, yPos));
+                    yPos += 25;
+
+                    gfx.DrawString("Cash", fontBold, brushBlack, new XPoint(leftMargin, yPos));
+                    string cashStr = $"₱{transaction.AmountPaid:N2}";
+                    double cashWidth = gfx.MeasureString(cashStr, fontBold).Width;
+                    gfx.DrawString(cashStr, fontBold, brushBlack, new XPoint(rightCol - cashWidth, yPos));
+                    yPos += 15;
+
+                    gfx.DrawString("Change", fontBold, brushBlack, new XPoint(leftMargin, yPos));
+                    string changeStr = $"₱{transaction.Change:N2}";
+                    double changeWidth = gfx.MeasureString(changeStr, fontBold).Width;
+                    gfx.DrawString(changeStr, fontBold, brushBlack, new XPoint(rightCol - changeWidth, yPos));
+                    yPos += 25;
+
+                    gfx.DrawLine(penDotted, leftMargin, yPos, rightCol, yPos);
+                    yPos += 15;
+
+                    // 11. Footer
+                    gfx.DrawString("B", fontSmall, brushBlack, new XPoint(leftMargin, yPos));
+
+                    string[] footerLines = {
+                        "Follow us like. Tag us.",
+                        "FB: Ten Degreedcafe",
+                        "IG @tendegreescafe",
+                        "TikTok tendegreescafe"
+                    };
+
+                    double footerTextX = leftMargin + 20;
+                    foreach (var line in footerLines)
+                    {
+                        gfx.DrawString(line, fontSmall, brushBlack, new XPoint(footerTextX, yPos));
+                        yPos += 12;
+                    }
+
+                    yPos += 10;
+                    string ack = "Acknowledge Receipt Only";
+                    double ackWidth = gfx.MeasureString(ack, fontSmall).Width;
+                    gfx.DrawString(ack, fontSmall, brushGray, new XPoint(centerX - ackWidth / 2, yPos));
+                    yPos += 12;
+
+                    string thanks = "Thank you!";
+                    double thanksWidth = gfx.MeasureString(thanks, fontThanks).Width;
+                    gfx.DrawString(thanks, fontThanks, brushBlack, new XPoint(centerX - thanksWidth / 2, yPos));
                 }
 
+                // Save logic
                 using (MemoryStream stream = new MemoryStream())
                 {
                     document.Save(stream, false);
@@ -2872,9 +3452,11 @@ namespace TenDegreesPOS_New
             {
                 TransactionNumber = "TEMP-" + DateTime.Now.ToString("yyyyMMddHHmmss"),
                 TransactionDate = DateTime.Now,
-                SubTotal = cartItems.Sum(item => item.Price * item.Quantity),
-                Tax = cartItems.Sum(item => item.Price * item.Quantity) * 0.12m / 1.12m,
-                Total = cartItems.Sum(item => item.Price * item.Quantity)
+                // ▼▼▼ FIX: Use TotalPrice to include add-ons ▼▼▼
+                SubTotal = cartItems.Sum(item => item.TotalPrice),
+                Tax = cartItems.Sum(item => item.TotalPrice) * 0.12m,
+                Total = cartItems.Sum(item => item.TotalPrice)
+                // ▲▲▲ END OF FIX ▲▲▲
             };
 
             GeneratePDFReceipt(tempTransaction);
@@ -3456,6 +4038,12 @@ namespace TenDegreesPOS_New
             public int Quantity { get; set; }
             public decimal Price { get; set; }
             public string? Size { get; set; }
+
+            // ▼▼▼ NEW: Store Add-ons ▼▼▼
+            public List<CartItem> AddOns { get; set; } = new List<CartItem>();
+            // ▲▲▲ END OF NEW ▲▲▲
+
+            public decimal TotalPrice => (Price * Quantity) + (AddOns.Sum(a => a.Price * a.Quantity));
         }
     }
 }
